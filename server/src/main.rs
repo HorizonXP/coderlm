@@ -12,7 +12,10 @@ use tracing::info;
 use server::state::AppState;
 
 #[derive(Parser)]
-#[command(name = "coderlm", about = "CoderLM REPL server for code-aware agent sessions")]
+#[command(
+    name = "coderlm",
+    about = "CoderLM REPL server for code-aware agent sessions"
+)]
 struct Cli {
     /// Subcommand
     #[command(subcommand)]
@@ -86,9 +89,9 @@ async fn run_server(
     // If an initial path was provided, pre-index it
     if let Some(ref p) = path {
         info!("Pre-indexing project: {}", p.display());
-        state.get_or_create_project(p).map_err(|e| {
-            anyhow::anyhow!("Failed to index '{}': {}", p.display(), e)
-        })?;
+        state
+            .get_or_create_project(p)
+            .map_err(|e| anyhow::anyhow!("Failed to index '{}': {}", p.display(), e))?;
     }
 
     // Build router
@@ -100,7 +103,10 @@ async fn run_server(
     if let Some(ref p) = path {
         info!("coderlm serving {} on http://{}", p.display(), addr);
     } else {
-        info!("coderlm server listening on http://{} (no project pre-indexed)", addr);
+        info!(
+            "coderlm server listening on http://{} (no project pre-indexed)",
+            addr
+        );
     }
 
     axum::serve(listener, app).await?;
