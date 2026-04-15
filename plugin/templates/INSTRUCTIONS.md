@@ -132,5 +132,6 @@ Steps 3-7 repeat. A typical exploration is: find a symbol -> read its implementa
 | TypeScript | `.ts`, `.tsx`                 |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
 | Go         | `.go`                         |
+| Elixir     | `.ex`, `.exs`                 |
 
 All file types appear in the file tree and are searchable via peek/grep, but only the above produce parsed symbols.

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
+use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,8 +9,8 @@ use tracing::{debug, info, warn};
 use crate::config;
 use crate::index::file_entry::FileEntry;
 use crate::index::file_tree::FileTree;
-use crate::symbols::parser::extract_symbols_from_file;
 use crate::symbols::SymbolTable;
+use crate::symbols::parser::extract_symbols_from_file;
 
 /// Start the filesystem watcher. Returns a handle that keeps the watcher alive.
 /// Drop the handle to stop watching.
@@ -82,7 +82,14 @@ fn handle_events(
         match event.kind {
             DebouncedEventKind::Any => {
                 if path.is_file() {
-                    handle_file_change(root, file_tree, symbol_table, max_file_size, &rel_path, path);
+                    handle_file_change(
+                        root,
+                        file_tree,
+                        symbol_table,
+                        max_file_size,
+                        &rel_path,
+                        path,
+                    );
                 } else if !path.exists() {
                     handle_file_delete(file_tree, symbol_table, &rel_path);
                 }
@@ -149,11 +156,7 @@ fn handle_file_change(
     }
 }
 
-fn handle_file_delete(
-    file_tree: &Arc<FileTree>,
-    symbol_table: &Arc<SymbolTable>,
-    rel_path: &str,
-) {
+fn handle_file_delete(file_tree: &Arc<FileTree>, symbol_table: &Arc<SymbolTable>, rel_path: &str) {
     if file_tree.remove(rel_path).is_some() {
         symbol_table.remove_file(rel_path);
         debug!("Removed {} from index", rel_path);

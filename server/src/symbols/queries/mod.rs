@@ -1,3 +1,4 @@
+pub mod elixir;
 pub mod go;
 pub mod java;
 pub mod python;
@@ -17,6 +18,7 @@ pub fn get_language_config(lang: Language) -> Option<LanguageConfig> {
         Language::Go => Some(go::config()),
         Language::Java => Some(java::config()),
         Language::Scala => Some(scala::config()),
+        Language::Elixir => Some(elixir::config()),
         _ => None,
     }
 }
