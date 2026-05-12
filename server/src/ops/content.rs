@@ -105,6 +105,7 @@ pub fn grep(
         max_matches,
         context_lines,
         GrepScope::All,
+        None,
     )
 }
 
@@ -115,6 +116,7 @@ pub fn grep_with_scope(
     max_matches: usize,
     context_lines: usize,
     scope: GrepScope,
+    file_filter: Option<&str>,
 ) -> Result<GrepResponse, String> {
     let re = Regex::new(pattern).map_err(|e| format!("Invalid regex: {}", e))?;
 
@@ -124,6 +126,14 @@ pub fn grep_with_scope(
     let mut paths: Vec<(String, Language)> = file_tree
         .files
         .iter()
+        .filter(|e| {
+            if let Some(filter) = file_filter {
+                let key = e.key();
+                key == filter || key.contains(filter) || key.ends_with(filter)
+            } else {
+                true
+            }
+        })
         .map(|e| (e.key().clone(), e.value().language))
         .collect();
     paths.sort_by(|a, b| a.0.cmp(&b.0));
@@ -265,6 +275,30 @@ fn compute_non_code_ranges(source: &str, language: Language) -> Vec<(usize, usiz
             (block_comment) @skip
             (string) @skip
             (interpolated_string_expression) @skip
+        "#
+        }
+        Language::Ruby => {
+            r#"
+            (comment) @skip
+            (string) @skip
+            (heredoc_body) @skip
+            (regex) @skip
+        "#
+        }
+        Language::Php => {
+            r#"
+            (comment) @skip
+            (string) @skip
+            (encapsed_string) @skip
+            (heredoc) @skip
+            (nowdoc) @skip
+        "#
+        }
+        Language::Zig => {
+            r#"
+            (comment) @skip
+            (string) @skip
+            (multiline_string) @skip
         "#
         }
         Language::Elixir => {

@@ -8,6 +8,8 @@ use tracing::info;
 
 use crate::index::file_tree::FileTree;
 use crate::index::{walker, watcher};
+use crate::ops::buffers::Buffer;
+use crate::ops::subcalls::SubcallResult;
 use crate::server::errors::AppError;
 use crate::server::session::Session;
 use crate::symbols::{SymbolTable, parser};
@@ -21,6 +23,12 @@ pub struct Project {
     #[allow(dead_code)]
     pub watcher: Option<watcher::WatcherHandle>,
     pub last_active: Mutex<DateTime<Utc>>,
+    /// Named buffers for storing code snippets.
+    pub buffers: DashMap<String, Buffer>,
+    /// JSON variables for RLM state management.
+    pub variables: DashMap<String, serde_json::Value>,
+    /// Subcall results from recursive LLM queries.
+    pub subcall_results: Mutex<Vec<SubcallResult>>,
 }
 
 /// Shared application state, wrapped in Arc for axum handlers.
@@ -82,14 +90,18 @@ impl AppState {
             .map_err(|e| AppError::Internal(e.to_string()))?;
         info!("Indexed {} files for {}", file_count, canonical.display());
 
-        // Start watcher
-        let watcher_handle = watcher::start_watcher(
-            &canonical,
-            file_tree.clone(),
-            symbol_table.clone(),
-            max_file_size,
-        )
-        .ok();
+        // Start watcher unless disabled for large/generated-heavy workspaces.
+        let watcher_handle = if std::env::var("CODERLM_DISABLE_WATCHER").is_ok() {
+            None
+        } else {
+            watcher::start_watcher(
+                &canonical,
+                file_tree.clone(),
+                symbol_table.clone(),
+                max_file_size,
+            )
+            .ok()
+        };
 
         let project = Arc::new(Project {
             root: canonical.clone(),
@@ -97,6 +109,9 @@ impl AppState {
             symbol_table: symbol_table.clone(),
             watcher: watcher_handle,
             last_active: Mutex::new(Utc::now()),
+            buffers: DashMap::new(),
+            variables: DashMap::new(),
+            subcall_results: Mutex::new(Vec::new()),
         });
 
         self.inner.projects.insert(canonical, project.clone());

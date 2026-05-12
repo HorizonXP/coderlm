@@ -16,6 +16,8 @@ pub enum Language {
     C,
     Cpp,
     Ruby,
+    Php,
+    Zig,
     Shell,
     Markdown,
     Json,
@@ -40,7 +42,9 @@ impl Language {
             "ex" | "exs" => Language::Elixir,
             "c" | "h" => Language::C,
             "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => Language::Cpp,
-            "rb" => Language::Ruby,
+            "rb" | "rake" => Language::Ruby,
+            "php" | "phtml" => Language::Php,
+            "zig" | "zon" => Language::Zig,
             "sh" | "bash" | "zsh" | "fish" => Language::Shell,
             "md" | "mdx" => Language::Markdown,
             "json" | "jsonc" => Language::Json,
@@ -72,6 +76,9 @@ impl Language {
                 | Language::Java
                 | Language::Scala
                 | Language::Elixir
+                | Language::Ruby
+                | Language::Php
+                | Language::Zig
         )
     }
 }
