@@ -29,8 +29,8 @@ pub fn peek(
     }
 
     let abs_path = root.join(file);
-    let source =
-        std::fs::read_to_string(&abs_path).map_err(|e| format!("Failed to read '{}': {}", file, e))?;
+    let source = std::fs::read_to_string(&abs_path)
+        .map_err(|e| format!("Failed to read '{}': {}", file, e))?;
 
     let lines: Vec<&str> = source.lines().collect();
     let total_lines = lines.len();
@@ -98,7 +98,15 @@ pub fn grep(
     max_matches: usize,
     context_lines: usize,
 ) -> Result<GrepResponse, String> {
-    grep_with_scope(root, file_tree, pattern, max_matches, context_lines, GrepScope::All, None)
+    grep_with_scope(
+        root,
+        file_tree,
+        pattern,
+        max_matches,
+        context_lines,
+        GrepScope::All,
+        None,
+    )
 }
 
 pub fn grep_with_scope(
@@ -178,10 +186,8 @@ pub fn grep_with_scope(
                     let ctx_start = i.saturating_sub(context_lines);
                     let ctx_end = (i + context_lines + 1).min(lines.len());
 
-                    let context_before: Vec<String> = lines[ctx_start..i]
-                        .iter()
-                        .map(|l| l.to_string())
-                        .collect();
+                    let context_before: Vec<String> =
+                        lines[ctx_start..i].iter().map(|l| l.to_string()).collect();
                     let context_after: Vec<String> = lines[(i + 1)..ctx_end]
                         .iter()
                         .map(|l| l.to_string())
@@ -228,55 +234,83 @@ fn compute_non_code_ranges(source: &str, language: Language) -> Vec<(usize, usiz
 
     // Query for comment and string nodes
     let query_str = match language {
-        Language::Rust => r#"
+        Language::Rust => {
+            r#"
             (line_comment) @skip
             (block_comment) @skip
             (string_literal) @skip
             (raw_string_literal) @skip
-        "#,
-        Language::Python => r#"
+        "#
+        }
+        Language::Python => {
+            r#"
             (comment) @skip
             (string) @skip
-        "#,
-        Language::TypeScript | Language::JavaScript => r#"
+        "#
+        }
+        Language::TypeScript | Language::JavaScript => {
+            r#"
             (comment) @skip
             (string) @skip
             (template_string) @skip
-        "#,
-        Language::Go => r#"
+        "#
+        }
+        Language::Go => {
+            r#"
             (comment) @skip
             (raw_string_literal) @skip
             (interpreted_string_literal) @skip
-        "#,
-        Language::Java => r#"
+        "#
+        }
+        Language::Java => {
+            r#"
             (line_comment) @skip
             (block_comment) @skip
             (string_literal) @skip
-        "#,
-        Language::Scala => r#"
+        "#
+        }
+        Language::Scala => {
+            r#"
             (comment) @skip
             (block_comment) @skip
             (string) @skip
             (interpolated_string_expression) @skip
-        "#,
-        Language::Ruby => r#"
+        "#
+        }
+        Language::Ruby => {
+            r#"
             (comment) @skip
             (string) @skip
             (heredoc_body) @skip
             (regex) @skip
-        "#,
-        Language::Php => r#"
+        "#
+        }
+        Language::Php => {
+            r#"
             (comment) @skip
             (string) @skip
             (encapsed_string) @skip
             (heredoc) @skip
             (nowdoc) @skip
-        "#,
-        Language::Zig => r#"
+        "#
+        }
+        Language::Zig => {
+            r#"
             (comment) @skip
             (string) @skip
             (multiline_string) @skip
-        "#,
+        "#
+        }
+        Language::Elixir => {
+            r#"
+            (comment) @skip
+            (string) @skip
+            (charlist) @skip
+            (sigil) @skip
+            (quoted_atom) @skip
+            (quoted_keyword) @skip
+        "#
+        }
         _ => return Vec::new(),
     };
 
@@ -349,8 +383,8 @@ pub fn chunk_indices(
     }
 
     let abs_path = root.join(file);
-    let source =
-        std::fs::read_to_string(&abs_path).map_err(|e| format!("Failed to read '{}': {}", file, e))?;
+    let source = std::fs::read_to_string(&abs_path)
+        .map_err(|e| format!("Failed to read '{}': {}", file, e))?;
 
     let total_bytes = source.len();
     let step = size - overlap;

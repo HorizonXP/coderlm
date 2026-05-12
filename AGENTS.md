@@ -1,4 +1,5 @@
-# CodeRLM — Structural Codebase Exploration ({{PLATFORM_NAME}})
+<!-- coderlm-start -->
+# CodeRLM — Structural Codebase Exploration (Codex CLI)
 
 You have access to a tree-sitter-backed index server that knows the structure of this codebase: every function, every caller, every symbol, every test reference. Use it instead of guessing with grep.
 
@@ -32,34 +33,34 @@ Do not scan files looking for relevant code. Work the way an engineer traces thr
 All commands go through the wrapper script:
 
 ```bash
-python3 {{CLI_PATH}} <command> [args]
+python3 .codex/coderlm/coderlm_cli.py <command> [args]
 ```
 
 ### Setup
 
 ```bash
-python3 {{CLI_PATH}} init                    # Create session, index the project (response includes L1 structure for free)
-python3 {{CLI_PATH}} structure --depth 2     # File tree with language breakdown
+python3 .codex/coderlm/coderlm_cli.py init                    # Create session, index the project (response includes L1 structure for free)
+python3 .codex/coderlm/coderlm_cli.py structure --depth 2     # File tree with language breakdown
 ```
 
 ### Finding Code
 
 ```bash
-python3 {{CLI_PATH}} search "symbol_name" --limit 20             # Find symbols by name (index lookup)
-python3 {{CLI_PATH}} search "symbol_name" --file path/to/file.py  # Restrict search to one file
-python3 {{CLI_PATH}} symbols --kind function --file path          # List all functions in a file
-python3 {{CLI_PATH}} grep "pattern" --max-matches 20              # Regex search
-python3 {{CLI_PATH}} grep "pattern" --scope code                   # Skip matches in comments/strings
-python3 {{CLI_PATH}} grep "pattern" --file path/to/file.py        # Restrict grep to one file
+python3 .codex/coderlm/coderlm_cli.py search "symbol_name" --limit 20             # Find symbols by name (index lookup)
+python3 .codex/coderlm/coderlm_cli.py search "symbol_name" --file path/to/file.py  # Restrict search to one file
+python3 .codex/coderlm/coderlm_cli.py symbols --kind function --file path          # List all functions in a file
+python3 .codex/coderlm/coderlm_cli.py grep "pattern" --max-matches 20              # Regex search
+python3 .codex/coderlm/coderlm_cli.py grep "pattern" --scope code                   # Skip matches in comments/strings
+python3 .codex/coderlm/coderlm_cli.py grep "pattern" --file path/to/file.py        # Restrict grep to one file
 ```
 
 ### Retrieving Exact Code
 
 ```bash
-python3 {{CLI_PATH}} impl function_name --file path        # Full function body (tree-sitter extracted)
-python3 {{CLI_PATH}} peek path --start N --end M           # Exact line range
-python3 {{CLI_PATH}} variables function_name --file path   # Local variables inside a function
-python3 {{CLI_PATH}} chunks path --size 5000 --overlap 200 # Byte-range chunk boundaries (large files)
+python3 .codex/coderlm/coderlm_cli.py impl function_name --file path        # Full function body (tree-sitter extracted)
+python3 .codex/coderlm/coderlm_cli.py peek path --start N --end M           # Exact line range
+python3 .codex/coderlm/coderlm_cli.py variables function_name --file path   # Local variables inside a function
+python3 .codex/coderlm/coderlm_cli.py chunks path --size 5000 --overlap 200 # Byte-range chunk boundaries (large files)
 ```
 
 **Prefer `impl` and `peek` over reading entire files.** They return exactly the code you need — a single function from a 1000-line file, a specific line range — without loading irrelevant code into context.
@@ -67,8 +68,8 @@ python3 {{CLI_PATH}} chunks path --size 5000 --overlap 200 # Byte-range chunk bo
 ### Tracing Connections
 
 ```bash
-python3 {{CLI_PATH}} callers function_name --file path     # Every call site: file, line, calling code
-python3 {{CLI_PATH}} tests function_name --file path       # Tests referencing this symbol
+python3 .codex/coderlm/coderlm_cli.py callers function_name --file path     # Every call site: file, line, calling code
+python3 .codex/coderlm/coderlm_cli.py tests function_name --file path       # Tests referencing this symbol
 ```
 
 These search the entire indexed codebase, not just files you've already seen.
@@ -79,14 +80,14 @@ For 2+ related lookups, use `batch` (sequential CLI commands) or `exec` (Python 
 
 ```bash
 # Batch — runs each line as a CLI subcommand, in order, sharing the session
-python3 {{CLI_PATH}} batch --commands "
+python3 .codex/coderlm/coderlm_cli.py batch --commands "
   search MyFunction
   impl MyFunction --file path/to/file.py
   callers MyFunction --file path/to/file.py
 "
 
 # Exec — Python with helpers in scope; later queries can use earlier results
-python3 {{CLI_PATH}} exec --code "
+python3 .codex/coderlm/coderlm_cli.py exec --code "
   hits = search('serialize_response')
   if hits.get('symbols'):
       sym = hits['symbols'][0]
@@ -103,11 +104,11 @@ python3 {{CLI_PATH}} exec --code "
 ### Annotating
 
 ```bash
-python3 {{CLI_PATH}} define-file src/server/mod.rs "HTTP routing and handler dispatch"
-python3 {{CLI_PATH}} define-symbol handle_request --file src/server/mod.rs "Routes requests by method+path"
-python3 {{CLI_PATH}} mark tests/integration.rs test
-python3 {{CLI_PATH}} save-annotations                      # Persist to disk (.coderlm/annotations.json)
-python3 {{CLI_PATH}} load-annotations                      # Reload from disk (also auto-loaded on init)
+python3 .codex/coderlm/coderlm_cli.py define-file src/server/mod.rs "HTTP routing and handler dispatch"
+python3 .codex/coderlm/coderlm_cli.py define-symbol handle_request --file src/server/mod.rs "Routes requests by method+path"
+python3 .codex/coderlm/coderlm_cli.py mark tests/integration.rs test
+python3 .codex/coderlm/coderlm_cli.py save-annotations                      # Persist to disk (.coderlm/annotations.json)
+python3 .codex/coderlm/coderlm_cli.py load-annotations                      # Reload from disk (also auto-loaded on init)
 ```
 
 Annotations persist across queries within a session. Use `save-annotations` to persist across sessions.
@@ -115,7 +116,7 @@ Annotations persist across queries within a session. Use `save-annotations` to p
 ### Cleanup
 
 ```bash
-python3 {{CLI_PATH}} cleanup                               # End session
+python3 .codex/coderlm/coderlm_cli.py cleanup                               # End session
 ```
 
 ## Workflow
@@ -172,3 +173,5 @@ Steps 3-7 repeat. A typical exploration is: find a symbol → read its implement
 | Zig        | `.zig`, `.zon`                |
 
 All file types appear in the file tree and are searchable via peek/grep, but only the above produce parsed symbols.
+
+<!-- coderlm-end -->

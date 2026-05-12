@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use crate::index::file_entry::FileMark;
 use crate::index::file_tree::FileTree;
-use crate::symbols::symbol::SymbolKind;
 use crate::symbols::SymbolTable;
+use crate::symbols::symbol::SymbolKind;
 
 #[derive(Debug, Serialize)]
 pub struct StructureResponse {
@@ -113,13 +113,11 @@ pub fn get_structure_with_detail(
 
         let source = if detail >= 3 {
             let abs_path = root.join(&sym.file);
-            std::fs::read_to_string(&abs_path)
-                .ok()
-                .and_then(|src| {
-                    let start = sym.byte_range.0;
-                    let end = sym.byte_range.1.min(src.len());
-                    Some(src[start..end].to_string())
-                })
+            std::fs::read_to_string(&abs_path).ok().and_then(|src| {
+                let start = sym.byte_range.0;
+                let end = sym.byte_range.1.min(src.len());
+                Some(src[start..end].to_string())
+            })
         } else {
             None
         };
@@ -128,16 +126,17 @@ pub fn get_structure_with_detail(
             name: sym.name.clone(),
             kind: sym.kind,
             signature: sym.signature.clone(),
-            parent: if detail >= 2 { sym.parent.clone() } else { None },
+            parent: if detail >= 2 {
+                sym.parent.clone()
+            } else {
+                None
+            },
             definition: sym.definition.clone(),
             line: sym.line_range.0,
             source,
         };
 
-        file_map
-            .entry(sym.file.clone())
-            .or_default()
-            .push(summary);
+        file_map.entry(sym.file.clone()).or_default().push(summary);
     }
 
     // Sort symbols within each file by line number
@@ -159,11 +158,7 @@ pub fn get_structure_with_detail(
     }
 }
 
-pub fn define_file(
-    file_tree: &Arc<FileTree>,
-    file: &str,
-    definition: &str,
-) -> Result<(), String> {
+pub fn define_file(file_tree: &Arc<FileTree>, file: &str, definition: &str) -> Result<(), String> {
     if let Some(mut entry) = file_tree.files.get_mut(file) {
         if entry.definition.is_some() {
             return Err(format!(
@@ -191,11 +186,7 @@ pub fn redefine_file(
     }
 }
 
-pub fn mark_file(
-    file_tree: &Arc<FileTree>,
-    file: &str,
-    mark_str: &str,
-) -> Result<(), String> {
+pub fn mark_file(file_tree: &Arc<FileTree>, file: &str, mark_str: &str) -> Result<(), String> {
     let mark = FileMark::from_str(mark_str)
         .ok_or_else(|| format!("Unknown mark type: '{}'. Valid: documentation, ignore, test, config, generated, custom", mark_str))?;
 

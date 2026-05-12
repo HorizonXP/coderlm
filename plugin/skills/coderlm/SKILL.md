@@ -1,6 +1,6 @@
 ---
 name: coderlm
-description: "Structural codebase navigation for supported languages (Rust, Python, TypeScript, JavaScript, Go, Java, Scala, Ruby, PHP, Zig, SQL). Provides tree-sitter-backed indexing: find symbols by name, get exact function bodies, follow caller chains, discover tests. Works best combined with the Read tool: use coderlm CLI (`search`, `impl`, `callers`) to locate the right code across a codebase, then `Read` the identified files directly for full context. Use for: tracing execution paths across multiple files, answering 'what calls X', 'how does X work', 'where is X defined'. Avoid raw bash grep/find — use the coderlm `grep` command instead."
+description: "Structural codebase navigation for supported languages (Rust, Python, TypeScript, JavaScript, Go, Java, Scala, Elixir, Ruby, PHP, Zig, SQL). Provides tree-sitter-backed indexing: find symbols by name, get exact function bodies, follow caller chains, discover tests, and trace execution paths. Works best combined with targeted file reads: use coderlm CLI (`search`, `impl`, `callers`, `grep`) to locate the right code across a codebase, then read identified files directly when full context is needed. Use for: answering 'what calls X', 'how does X work', 'where is X defined', and 'where does this error come from'. Avoid raw bash grep/find — use the coderlm `grep` command instead."
 allowed-tools:
   - Bash
   - Read
@@ -116,5 +116,44 @@ Available helpers in exec mode: `search()`, `impl_()`, `callers()`, `tests()`, `
 
 This skill reads `$ARGUMENTS`. Accepted patterns:
 - `query=<question>` (required): what to find or understand
-- `cwd=<path>` (optional): project directory
-- `port=<N>` (optional): server port (default: 3000)
+- `cwd=<path>` (optional): project directory, defaults to cwd
+- `port=<N>` (optional): server port, defaults to 3000
+
+If no query is provided, ask what the user wants to find or understand about the codebase.
+
+## Workflow
+
+1. **Init** — `cli init` to create a session and index the project.
+2. **Orient** — `cli structure` to see the project layout. Identify likely starting points.
+3. **Find the entrypoint** — `cli search` or `cli grep` to locate the starting symbol or pattern.
+4. **Retrieve** — `cli impl` to read the exact implementation. Not the file. The function.
+5. **Trace** — `cli callers` to see what calls it. `cli impl` on those callers. Follow the chain.
+6. **Widen** — `cli tests` to find test coverage. `cli grep` for related patterns discovered during tracing.
+7. **Annotate** — `cli define-symbol` and `cli define-file` as understanding solidifies.
+8. **Synthesize** — Compile findings into a coherent answer with specific file:line references.
+
+Steps 3–7 repeat. A typical exploration is: find a symbol → read its implementation → trace its callers → read those implementations → discover related symbols → repeat until the causal chain is clear.
+
+## When to Use the Server vs Native Tools
+
+| Task | Use server | Why |
+|------|-----------|-----|
+| Find a function by name | `search` | Index lookup, not file globbing |
+| Find code when name is unknown | `grep` + `symbols` | Searches all indexed files at once |
+| Get a function's source | `impl` | Returns just that function, even from large files |
+| Read specific lines | `peek` | Surgical extraction, not the whole file |
+| Find what calls a function | `callers` | Cross-project search with exact call sites |
+| Find tests for a function | `tests` | By symbol reference, not filename guessing |
+| Get project overview | `structure` | Tree with file counts and language breakdown |
+| Read an entire small file | Read tool | When you genuinely need the whole file |
+
+**Default to the server.** Use Read only when you need an entire file or the server is unavailable.
+
+## Troubleshooting
+
+- **"Cannot connect to coderlm-server"** — Server not running. Start with `coderlm-server serve`.
+- **"No active session"** — Run `cli init` first.
+- **"Project was evicted"** — Server hit capacity (default 5 projects). Re-run `cli init`.
+- **Search returns nothing relevant** — Try broader grep patterns or list all symbols: `cli symbols --limit 200`.
+
+For the full API endpoint reference, see [references/api-reference.md](references/api-reference.md).

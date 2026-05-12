@@ -12,6 +12,7 @@ pub enum Language {
     Go,
     Java,
     Scala,
+    Elixir,
     C,
     Cpp,
     Ruby,
@@ -38,6 +39,7 @@ impl Language {
             "go" => Language::Go,
             "java" => Language::Java,
             "scala" | "sc" => Language::Scala,
+            "ex" | "exs" => Language::Elixir,
             "c" | "h" => Language::C,
             "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => Language::Cpp,
             "rb" | "rake" => Language::Ruby,
@@ -66,8 +68,17 @@ impl Language {
     pub fn has_tree_sitter_support(&self) -> bool {
         matches!(
             self,
-            Language::Rust | Language::Python | Language::TypeScript | Language::JavaScript | Language::Go
-            | Language::Java | Language::Scala | Language::Ruby | Language::Php | Language::Zig
+            Language::Rust
+                | Language::Python
+                | Language::TypeScript
+                | Language::JavaScript
+                | Language::Go
+                | Language::Java
+                | Language::Scala
+                | Language::Elixir
+                | Language::Ruby
+                | Language::Php
+                | Language::Zig
         )
     }
 }

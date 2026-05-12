@@ -1,14 +1,14 @@
 use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
-use tree_sitter::StreamingIterator;
 use tracing::{debug, warn};
+use tree_sitter::StreamingIterator;
 
 use crate::index::file_entry::Language;
 use crate::index::file_tree::FileTree;
+use crate::symbols::SymbolTable;
 use crate::symbols::queries;
 use crate::symbols::symbol::{Symbol, SymbolKind};
-use crate::symbols::SymbolTable;
 
 /// Extract symbols from a single file.
 pub fn extract_symbols_from_file(
@@ -39,7 +39,11 @@ pub fn extract_symbols_from_file(
     let mut cursor = tree_sitter::QueryCursor::new();
     let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
 
-    let capture_names: Vec<String> = query.capture_names().iter().map(|s| s.to_string()).collect();
+    let capture_names: Vec<String> = query
+        .capture_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
     let mut symbols = Vec::new();
     let mut current_impl_type: Option<String> = None;
@@ -186,7 +190,10 @@ pub fn extract_symbols_from_file(
         use std::collections::HashMap;
         let kind_priority = |k: SymbolKind| -> u8 {
             match k {
-                SymbolKind::Other | SymbolKind::Variable | SymbolKind::Constant | SymbolKind::Import => 1,
+                SymbolKind::Other
+                | SymbolKind::Variable
+                | SymbolKind::Constant
+                | SymbolKind::Import => 1,
                 _ => 10,
             }
         };
@@ -195,7 +202,10 @@ pub fn extract_symbols_from_file(
             let key = format!("{}::{}", sym.file, sym.name);
             let range_size = sym.byte_range.1.saturating_sub(sym.byte_range.0);
             if let Some(&prev_idx) = best.get(&key) {
-                let prev_size = symbols[prev_idx].byte_range.1.saturating_sub(symbols[prev_idx].byte_range.0);
+                let prev_size = symbols[prev_idx]
+                    .byte_range
+                    .1
+                    .saturating_sub(symbols[prev_idx].byte_range.0);
                 if range_size > prev_size {
                     best.insert(key, i);
                 } else if range_size == prev_size

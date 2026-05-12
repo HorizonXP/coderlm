@@ -5,9 +5,9 @@ use tree_sitter::StreamingIterator;
 
 use crate::index::file_entry::Language;
 use crate::index::file_tree::FileTree;
+use crate::symbols::SymbolTable;
 use crate::symbols::queries;
 use crate::symbols::symbol::{Symbol, SymbolKind};
-use crate::symbols::SymbolTable;
 
 pub fn list_symbols(
     symbol_table: &Arc<SymbolTable>,
@@ -25,7 +25,11 @@ pub fn list_symbols(
         results.retain(|s| s.kind == kind);
     }
 
-    results.sort_by(|a, b| a.file.cmp(&b.file).then(a.line_range.0.cmp(&b.line_range.0)));
+    results.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.line_range.0.cmp(&b.line_range.0))
+    });
     results.truncate(limit);
     results
 }
@@ -36,7 +40,14 @@ pub fn search_symbols(
     limit: usize,
     file_filter: Option<&str>,
 ) -> Vec<Symbol> {
-    let mut results = symbol_table.search(query, if file_filter.is_some() { limit * 5 } else { limit });
+    let mut results = symbol_table.search(
+        query,
+        if file_filter.is_some() {
+            limit * 5
+        } else {
+            limit
+        },
+    );
 
     // Apply file filter if provided
     if let Some(file) = file_filter {
@@ -46,8 +57,10 @@ pub fn search_symbols(
     // If few results, also search by signature substring
     if results.len() < limit {
         let query_lower = query.to_lowercase();
-        let existing_keys: std::collections::HashSet<String> =
-            results.iter().map(|s| format!("{}::{}", s.file, s.name)).collect();
+        let existing_keys: std::collections::HashSet<String> = results
+            .iter()
+            .map(|s| format!("{}::{}", s.file, s.name))
+            .collect();
 
         for entry in symbol_table.symbols.iter() {
             let sym = entry.value();
@@ -168,6 +181,10 @@ pub fn find_callers(
             Err(_) => continue,
         };
 
+        if !source.contains(symbol_name) {
+            continue;
+        }
+
         let file_callers = if language.has_tree_sitter_support() {
             find_callers_ast(&source, &rel_path, language, symbol_name, file)
         } else {
@@ -214,7 +231,11 @@ fn find_callers_ast(
         Err(_) => return find_callers_regex(source, rel_path, symbol_name, definition_file),
     };
 
-    let capture_names: Vec<String> = query.capture_names().iter().map(|s| s.to_string()).collect();
+    let capture_names: Vec<String> = query
+        .capture_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let callee_idx = capture_names.iter().position(|n| n == "callee");
 
     let mut cursor = tree_sitter::QueryCursor::new();
@@ -229,10 +250,7 @@ fn find_callers_ast(
                     let line_num = cap.node.start_position().row + 1;
                     // Skip the definition itself
                     if rel_path == definition_file {
-                        let line_text = source
-                            .lines()
-                            .nth(line_num - 1)
-                            .unwrap_or("");
+                        let line_text = source.lines().nth(line_num - 1).unwrap_or("");
                         if is_definition_line(line_text, symbol_name, language) {
                             continue;
                         }
@@ -275,6 +293,14 @@ fn find_callers_regex(
             if rel_path == definition_file
                 && (line.contains(&format!("fn {}", symbol_name))
                     || line.contains(&format!("def {}", symbol_name))
+                    || line.contains(&format!("defp {}", symbol_name))
+                    || line.contains(&format!("defmacro {}", symbol_name))
+                    || line.contains(&format!("defmacrop {}", symbol_name))
+                    || line.contains(&format!("defguard {}", symbol_name))
+                    || line.contains(&format!("defguardp {}", symbol_name))
+                    || line.contains(&format!("defmodule {}", symbol_name))
+                    || line.contains(&format!("defprotocol {}", symbol_name))
+                    || line.contains(&format!("defimpl {}", symbol_name))
                     || line.contains(&format!("function {}", symbol_name))
                     || line.contains(&format!("func {}", symbol_name))
                     || line.contains(&format!("class {}", symbol_name))
@@ -301,19 +327,24 @@ fn is_definition_line(line: &str, name: &str, language: Language) -> bool {
         Language::Rust => line.contains(&format!("fn {}", name)),
         Language::Python => line.contains(&format!("def {}", name)),
         Language::TypeScript | Language::JavaScript => {
-            line.contains(&format!("function {}", name))
-                || line.contains(&format!("{} =", name))
+            line.contains(&format!("function {}", name)) || line.contains(&format!("{} =", name))
         }
         Language::Go => line.contains(&format!("func {}", name)),
         Language::Java => {
             line.contains(&format!("class {}", name))
                 || line.contains(&format!("interface {}", name))
                 || line.contains(&format!("enum {}", name))
-                || (line.contains(name) && (line.contains("void ") || line.contains("int ")
-                    || line.contains("String ") || line.contains("boolean ")
-                    || line.contains("long ") || line.contains("double ")
-                    || line.contains("float ") || line.contains("public ")
-                    || line.contains("private ") || line.contains("protected ")))
+                || (line.contains(name)
+                    && (line.contains("void ")
+                        || line.contains("int ")
+                        || line.contains("String ")
+                        || line.contains("boolean ")
+                        || line.contains("long ")
+                        || line.contains("double ")
+                        || line.contains("float ")
+                        || line.contains("public ")
+                        || line.contains("private ")
+                        || line.contains("protected ")))
         }
         Language::Scala => {
             line.contains(&format!("def {}", name))
@@ -321,15 +352,29 @@ fn is_definition_line(line: &str, name: &str, language: Language) -> bool {
                 || line.contains(&format!("class {}", name))
                 || line.contains(&format!("trait {}", name))
         }
+        Language::Elixir => {
+            line.contains(&format!("def {}", name))
+                || line.contains(&format!("defp {}", name))
+                || line.contains(&format!("defmacro {}", name))
+                || line.contains(&format!("defmacrop {}", name))
+                || line.contains(&format!("defguard {}", name))
+                || line.contains(&format!("defguardp {}", name))
+                || line.contains(&format!("defmodule {}", name))
+                || line.contains(&format!("defprotocol {}", name))
+                || line.contains(&format!("defimpl {}", name))
+        }
         Language::Ruby => {
             line.contains(&format!("def {}", name))
                 || line.contains(&format!("def self.{}", name))
                 || line.contains(&format!("class {}", name))
                 || line.contains(&format!("module {}", name))
                 || line.contains(&format!("alias {}", name))
-                || (line.contains(name) && (line.contains("attr_reader")
-                    || line.contains("attr_writer") || line.contains("attr_accessor")
-                    || line.contains("define_method") || line.contains("alias_method")))
+                || (line.contains(name)
+                    && (line.contains("attr_reader")
+                        || line.contains("attr_writer")
+                        || line.contains("attr_accessor")
+                        || line.contains("define_method")
+                        || line.contains("alias_method")))
         }
         Language::Php => {
             line.contains(&format!("function {}", name))
@@ -365,15 +410,19 @@ pub struct CallerInfo {
 /// Find test functions that reference a given symbol.
 pub fn find_tests(
     root: &Path,
-    _file_tree: &Arc<FileTree>,
+    file_tree: &Arc<FileTree>,
     symbol_table: &Arc<SymbolTable>,
     symbol_name: &str,
     file: &str,
     limit: usize,
 ) -> Result<Vec<TestInfo>, String> {
-    let _sym = symbol_table
+    let sym = symbol_table
         .get(file, symbol_name)
         .ok_or_else(|| format!("Symbol '{}' not found in '{}'", symbol_name, file))?;
+
+    if sym.language == Language::Elixir {
+        return Ok(find_exunit_tests(root, file_tree, symbol_name, limit));
+    }
 
     let mut tests = Vec::new();
 
@@ -417,9 +466,7 @@ fn is_test_symbol(sym: &Symbol) -> bool {
         return true;
     }
     match sym.language {
-        Language::Rust => {
-            sym.name.starts_with("test") || sym.file.contains("/tests/")
-        }
+        Language::Rust => sym.name.starts_with("test") || sym.file.contains("/tests/"),
         Language::Python => {
             sym.name.starts_with("test_")
                 || sym.file.contains("test_")
@@ -430,14 +477,15 @@ fn is_test_symbol(sym: &Symbol) -> bool {
                 || sym.file.contains(".spec.")
                 || sym.file.contains("__tests__")
         }
-        Language::Go => {
-            sym.name.starts_with("Test") || sym.file.ends_with("_test.go")
-        }
-        Language::Java => {
-            sym.file.contains("Test") || sym.file.contains("/test/")
-        }
+        Language::Go => sym.name.starts_with("Test") || sym.file.ends_with("_test.go"),
+        Language::Java => sym.file.contains("Test") || sym.file.contains("/test/"),
         Language::Scala => {
             sym.file.contains("Spec") || sym.file.contains("Test") || sym.file.contains("/test/")
+        }
+        Language::Elixir => {
+            sym.file.ends_with("_test.exs")
+                || sym.file.contains("/test/")
+                || sym.file.contains("/test/support/")
         }
         Language::Ruby => {
             sym.name.starts_with("test_")
@@ -523,7 +571,11 @@ fn list_variables_ast(
         Err(_) => return list_variables_regex(&source[fn_start..fn_end], language, function_name),
     };
 
-    let capture_names: Vec<String> = query.capture_names().iter().map(|s| s.to_string()).collect();
+    let capture_names: Vec<String> = query
+        .capture_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let var_name_idx = capture_names.iter().position(|n| n == "var.name");
 
     let mut cursor = tree_sitter::QueryCursor::new();
@@ -537,7 +589,11 @@ fn list_variables_ast(
         for cap in m.captures {
             if Some(cap.index as usize) == var_name_idx {
                 let text = cap.node.utf8_text(source.as_bytes()).unwrap_or("");
-                if !text.is_empty() && text != "self" && text != "_" && seen.insert(text.to_string()) {
+                if !text.is_empty()
+                    && text != "self"
+                    && text != "_"
+                    && seen.insert(text.to_string())
+                {
                     variables.push(VariableInfo {
                         name: text.to_string(),
                         function: function_name.to_string(),
@@ -551,11 +607,7 @@ fn list_variables_ast(
 }
 
 /// Regex fallback for variable extraction.
-fn list_variables_regex(
-    body: &str,
-    language: Language,
-    function_name: &str,
-) -> Vec<VariableInfo> {
+fn list_variables_regex(body: &str, language: Language, function_name: &str) -> Vec<VariableInfo> {
     let mut variables = Vec::new();
 
     match language {
@@ -623,6 +675,39 @@ fn list_variables_regex(
                 });
             }
         }
+        Language::Elixir => {
+            let param_re =
+                regex::Regex::new(r"\bdef(?:p|macro|macrop|guard|guardp)?\s+\w+\s*\(([^)]*)\)")
+                    .unwrap();
+            let assign_re = regex::Regex::new(r"\b([a-z_][a-zA-Z0-9_]*)\s*=").unwrap();
+            let bind_re = regex::Regex::new(r"\b([a-z_][a-zA-Z0-9_]*)\s*<-").unwrap();
+            let identifier_re = regex::Regex::new(r"\b([a-z_][a-zA-Z0-9_]*)\b").unwrap();
+
+            for cap in param_re.captures_iter(body) {
+                for segment in cap[1].split(',') {
+                    if let Some(id) = identifier_re.captures(segment) {
+                        variables.push(VariableInfo {
+                            name: id[1].to_string(),
+                            function: function_name.to_string(),
+                        });
+                    }
+                }
+            }
+
+            for cap in assign_re.captures_iter(body) {
+                variables.push(VariableInfo {
+                    name: cap[1].to_string(),
+                    function: function_name.to_string(),
+                });
+            }
+
+            for cap in bind_re.captures_iter(body) {
+                variables.push(VariableInfo {
+                    name: cap[1].to_string(),
+                    function: function_name.to_string(),
+                });
+            }
+        }
         Language::Ruby => {
             let assign_re = regex::Regex::new(r"^\s+(\w+)\s*=").unwrap();
             for cap in assign_re.captures_iter(body) {
@@ -680,6 +765,133 @@ fn list_variables_regex(
     variables.dedup_by(|a, b| a.name == b.name);
 
     variables
+}
+
+fn find_exunit_tests(
+    root: &Path,
+    file_tree: &Arc<FileTree>,
+    symbol_name: &str,
+    limit: usize,
+) -> Vec<TestInfo> {
+    let mut tests = Vec::new();
+
+    for entry in file_tree.files.iter() {
+        let rel_path = entry.key();
+        let file = entry.value();
+        if file.language != Language::Elixir || !is_elixir_test_file(rel_path) {
+            continue;
+        }
+
+        let abs_path = root.join(rel_path);
+        let source = match std::fs::read_to_string(&abs_path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let language = tree_sitter_elixir::LANGUAGE.into();
+        let mut parser = tree_sitter::Parser::new();
+        if parser.set_language(&language).is_err() {
+            continue;
+        }
+
+        let tree = match parser.parse(&source, None) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        let query = match tree_sitter::Query::new(
+            &language,
+            r#"
+(call
+  target: (identifier) @test.kind
+  (arguments
+    [
+      (string) @test.name
+      (charlist) @test.name
+      (sigil) @test.name
+    ])
+  (#any-of? @test.kind "test" "describe")) @test.def
+"#,
+        ) {
+            Ok(q) => q,
+            Err(_) => continue,
+        };
+
+        let capture_names: Vec<String> = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let kind_idx = capture_names.iter().position(|n| n == "test.kind");
+        let name_idx = capture_names.iter().position(|n| n == "test.name");
+        let def_idx = capture_names.iter().position(|n| n == "test.def");
+
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+
+        while let Some(m) = matches.next() {
+            let mut kind = None;
+            let mut name = None;
+            let mut def_node = None;
+
+            for cap in m.captures {
+                let idx = cap.index as usize;
+                if Some(idx) == kind_idx {
+                    kind = cap
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .ok()
+                        .map(str::to_string);
+                } else if Some(idx) == name_idx {
+                    name = cap
+                        .node
+                        .utf8_text(source.as_bytes())
+                        .ok()
+                        .map(str::to_string);
+                } else if Some(idx) == def_idx {
+                    def_node = Some(cap.node);
+                }
+            }
+
+            let Some(def_node) = def_node else {
+                continue;
+            };
+
+            let start = def_node.start_byte();
+            let end = def_node.end_byte().min(source.len());
+            let body = &source[start..end];
+            if !body.contains(symbol_name) {
+                continue;
+            }
+
+            let kind = kind.unwrap_or_else(|| "test".to_string());
+            let label = clean_elixir_test_name(name.as_deref().unwrap_or(&kind));
+            tests.push(TestInfo {
+                name: format!("{} {}", kind, label),
+                file: rel_path.clone(),
+                line: def_node.start_position().row + 1,
+                signature: source
+                    .lines()
+                    .nth(def_node.start_position().row)
+                    .map(|line| line.trim().to_string())
+                    .unwrap_or_else(|| format!("{} {}", kind, label)),
+            });
+
+            if tests.len() >= limit {
+                return tests;
+            }
+        }
+    }
+
+    tests
+}
+
+fn is_elixir_test_file(path: &str) -> bool {
+    path.ends_with("_test.exs") || path.contains("/test/")
+}
+
+fn clean_elixir_test_name(name: &str) -> String {
+    name.trim().trim_matches('"').trim_matches('\'').to_string()
 }
 
 #[derive(Debug, serde::Serialize)]

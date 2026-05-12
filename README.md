@@ -178,6 +178,7 @@ Options:
 | Go         | `.go`                         | tree-sitter  |
 | Java       | `.java`                       | tree-sitter  |
 | Scala      | `.scala`, `.sc`               | tree-sitter  |
+| Elixir     | `.ex`, `.exs`                 | tree-sitter  |
 | Ruby       | `.rb`, `.rake`                | tree-sitter  |
 | PHP        | `.php`, `.phtml`              | tree-sitter  |
 | Zig        | `.zig`, `.zon`                | tree-sitter  |

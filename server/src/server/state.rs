@@ -12,7 +12,7 @@ use crate::ops::buffers::Buffer;
 use crate::ops::subcalls::SubcallResult;
 use crate::server::errors::AppError;
 use crate::server::session::Session;
-use crate::symbols::{parser, SymbolTable};
+use crate::symbols::{SymbolTable, parser};
 
 /// A single indexed project with its own file tree, symbol table, and watcher.
 pub struct Project {
@@ -58,9 +58,9 @@ impl AppState {
 
     /// Look up an existing project or index a new one. Evicts LRU if at capacity.
     pub fn get_or_create_project(&self, cwd: &Path) -> Result<Arc<Project>, AppError> {
-        let canonical = cwd.canonicalize().map_err(|e| {
-            AppError::BadRequest(format!("Path not accessible: {}", e))
-        })?;
+        let canonical = cwd
+            .canonicalize()
+            .map_err(|e| AppError::BadRequest(format!("Path not accessible: {}", e)))?;
 
         if !canonical.is_dir() {
             return Err(AppError::BadRequest(format!(
@@ -86,19 +86,22 @@ impl AppState {
         let max_file_size = self.inner.max_file_size;
 
         info!("Indexing new project: {}", canonical.display());
-        let file_count =
-            walker::scan_directory(&canonical, &file_tree, max_file_size)
-                .map_err(|e| AppError::Internal(e.to_string()))?;
+        let file_count = walker::scan_directory(&canonical, &file_tree, max_file_size)
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         info!("Indexed {} files for {}", file_count, canonical.display());
 
-        // Start watcher
-        let watcher_handle = watcher::start_watcher(
-            &canonical,
-            file_tree.clone(),
-            symbol_table.clone(),
-            max_file_size,
-        )
-        .ok();
+        // Start watcher unless disabled for large/generated-heavy workspaces.
+        let watcher_handle = if std::env::var("CODERLM_DISABLE_WATCHER").is_ok() {
+            None
+        } else {
+            watcher::start_watcher(
+                &canonical,
+                file_tree.clone(),
+                symbol_table.clone(),
+                max_file_size,
+            )
+            .ok()
+        };
 
         let project = Arc::new(Project {
             root: canonical.clone(),
@@ -139,17 +142,13 @@ impl AppState {
 
         let project_path = &session.project_path;
 
-        let project = self
-            .inner
-            .projects
-            .get(project_path)
-            .ok_or_else(|| {
-                AppError::Gone(format!(
-                    "Project at '{}' was evicted due to capacity limits. \
+        let project = self.inner.projects.get(project_path).ok_or_else(|| {
+            AppError::Gone(format!(
+                "Project at '{}' was evicted due to capacity limits. \
                      Start a new session to re-index, or increase --max-projects.",
-                    project_path.display()
-                ))
-            })?;
+                project_path.display()
+            ))
+        })?;
 
         Ok(project.clone())
     }
@@ -171,9 +170,7 @@ impl AppState {
             .min_by_key(|entry| *entry.value().last_active.lock())
             .map(|entry| entry.key().clone());
 
-        let path = oldest.ok_or_else(|| {
-            AppError::Internal("No projects to evict".into())
-        })?;
+        let path = oldest.ok_or_else(|| AppError::Internal("No projects to evict".into()))?;
 
         info!("Evicting project: {}", path.display());
 
@@ -181,7 +178,9 @@ impl AppState {
         self.inner.projects.remove(&path);
 
         // Remove all sessions attached to this project
-        self.inner.sessions.retain(|_, session| session.project_path != path);
+        self.inner
+            .sessions
+            .retain(|_, session| session.project_path != path);
 
         Ok(())
     }
