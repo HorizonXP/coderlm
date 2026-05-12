@@ -1,10 +1,13 @@
 pub mod elixir;
 pub mod go;
 pub mod java;
+pub mod php;
 pub mod python;
+pub mod ruby;
 pub mod rust;
 pub mod scala;
 pub mod typescript;
+pub mod zig;
 
 use crate::index::file_entry::Language;
 
@@ -19,6 +22,9 @@ pub fn get_language_config(lang: Language) -> Option<LanguageConfig> {
         Language::Java => Some(java::config()),
         Language::Scala => Some(scala::config()),
         Language::Elixir => Some(elixir::config()),
+        Language::Ruby => Some(ruby::config()),
+        Language::Php => Some(php::config()),
+        Language::Zig => Some(zig::config()),
         _ => None,
     }
 }

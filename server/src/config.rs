@@ -4,6 +4,9 @@
 pub const DEFAULT_IGNORE_DIRS: &[&str] = &[
     "node_modules",
     "vendor",
+    "deps",
+    "_build",
+    ".journey",
     "__pycache__",
     ".pycache",
     "target",
