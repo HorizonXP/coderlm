@@ -8,6 +8,11 @@ pub const SYMBOLS_QUERY: &str = r#"
 
 (call
   target: (identifier) @ignore
+  (arguments (alias) @import.name)
+  (#any-of? @ignore "alias" "import" "require" "use")) @import.def
+
+(call
+  target: (identifier) @ignore
   (arguments
     [
       (identifier) @function.name

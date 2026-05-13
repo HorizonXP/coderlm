@@ -1082,17 +1082,17 @@ mod tests {
 
         let sample = symbol_table.get(SAMPLE_FILE, "Fixture.Sample").unwrap();
         assert_eq!(sample.kind, SymbolKind::Module);
-        assert_eq!(sample.line_range, (1, 40));
+        assert_eq!(sample.line_range, (1, 48));
         assert_eq!(sample.signature, "defmodule Fixture.Sample do");
 
         let public_fun = symbol_table.get(SAMPLE_FILE, "public_fun/2").unwrap();
         assert_eq!(public_fun.kind, SymbolKind::Function);
-        assert_eq!(public_fun.line_range, (5, 12));
+        assert_eq!(public_fun.line_range, (12, 20));
         assert_eq!(public_fun.signature, "def public_fun(user, opts) do");
 
         let guarded = symbol_table.get(SAMPLE_FILE, "guarded/1").unwrap();
         assert_eq!(guarded.kind, SymbolKind::Function);
-        assert_eq!(guarded.line_range, (14, 16));
+        assert_eq!(guarded.line_range, (22, 24));
         assert_eq!(
             guarded.signature,
             "def guarded(value) when is_integer(value) do"
@@ -1100,8 +1100,104 @@ mod tests {
 
         let private = symbol_table.get(SAMPLE_FILE, "normalize/1").unwrap();
         assert_eq!(private.kind, SymbolKind::Function);
-        assert_eq!(private.line_range, (18, 20));
+        assert_eq!(private.line_range, (26, 28));
         assert_eq!(private.signature, "defp normalize(user) do");
+    }
+
+    #[test]
+    fn elixir_fixture_extracts_static_alias_import_require_and_use_relationships() {
+        let (root, file_tree, symbol_table) = index_elixir_fixture();
+
+        let user_alias = symbol_table
+            .get(SAMPLE_FILE, "Fixture.Accounts.User")
+            .unwrap();
+        assert_eq!(user_alias.kind, SymbolKind::Import);
+        assert_eq!(user_alias.signature, "alias Fixture.Accounts.User");
+
+        let aliased_as = symbol_table
+            .get(SAMPLE_FILE, "Fixture.Accounts.UserProfile")
+            .unwrap();
+        assert_eq!(aliased_as.kind, SymbolKind::Import);
+        assert_eq!(
+            aliased_as.signature,
+            "alias Fixture.Accounts.UserProfile, as: AccountUserProfile"
+        );
+
+        let imported = symbol_table.get(SAMPLE_FILE, "Ecto.Query").unwrap();
+        assert_eq!(imported.kind, SymbolKind::Import);
+        assert_eq!(imported.signature, "import Ecto.Query");
+
+        let required = symbol_table.get(SAMPLE_FILE, "Logger").unwrap();
+        assert_eq!(required.kind, SymbolKind::Import);
+        assert_eq!(required.signature, "require Logger");
+
+        let used = symbol_table.get(SAMPLE_FILE, "GenServer").unwrap();
+        assert_eq!(used.kind, SymbolKind::Import);
+        assert_eq!(used.signature, "use GenServer");
+
+        let imports = list_symbols(
+            &symbol_table,
+            Some(SymbolKind::Import),
+            Some(SAMPLE_FILE),
+            10,
+        );
+        let import_names: Vec<_> = imports.iter().map(|symbol| symbol.name.as_str()).collect();
+        assert_eq!(
+            import_names,
+            [
+                "Fixture.Accounts.User",
+                "Fixture.Accounts.UserProfile",
+                "Ecto.Query",
+                "Logger",
+                "GenServer"
+            ]
+        );
+
+        let basic_structure = crate::ops::structure::get_structure_with_detail(
+            &root,
+            &file_tree,
+            &symbol_table,
+            2,
+            0,
+        );
+        assert!(basic_structure.file_symbols.is_none());
+
+        let detailed_structure = crate::ops::structure::get_structure_with_detail(
+            &root,
+            &file_tree,
+            &symbol_table,
+            2,
+            1,
+        );
+        let sample_symbols = detailed_structure
+            .file_symbols
+            .unwrap()
+            .into_iter()
+            .find(|file| file.file == SAMPLE_FILE)
+            .unwrap()
+            .symbols;
+        assert!(
+            sample_symbols
+                .iter()
+                .any(|symbol| symbol.kind == SymbolKind::Import && symbol.name == "GenServer")
+        );
+    }
+
+    #[test]
+    fn elixir_fixture_ignores_relationships_in_comments_strings_and_dynamic_calls() {
+        let (_root, _file_tree, symbol_table) = index_elixir_fixture();
+
+        assert!(
+            symbol_table
+                .get(SAMPLE_FILE, "Fixture.Commented.Out")
+                .is_none()
+        );
+        assert!(
+            symbol_table
+                .get(SAMPLE_FILE, "Fixture.StringNoise")
+                .is_none()
+        );
+        assert!(symbol_table.get(SAMPLE_FILE, "dynamic_module").is_none());
     }
 
     #[test]
@@ -1197,7 +1293,7 @@ mod tests {
 
         assert_eq!(callers.len(), 1);
         assert_eq!(callers[0].file, SAMPLE_FILE);
-        assert_eq!(callers[0].line, 6);
+        assert_eq!(callers[0].line, 13);
         assert_eq!(callers[0].text, "normalized = normalize(user)");
     }
 
@@ -1209,7 +1305,17 @@ mod tests {
         let mut names: Vec<_> = variables.iter().map(|var| var.name.as_str()).collect();
         names.sort_unstable();
 
-        assert_eq!(names, ["item", "normalized", "opts", "remote", "user"]);
+        assert_eq!(
+            names,
+            [
+                "dynamic_module",
+                "item",
+                "normalized",
+                "opts",
+                "remote",
+                "user"
+            ]
+        );
     }
 
     #[test]
