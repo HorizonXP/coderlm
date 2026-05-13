@@ -188,7 +188,9 @@ Languages with tree-sitter support produce full symbol tables (functions, classe
 
 ### Elixir Support Boundaries
 
-Elixir indexing is conservative and source-based. CodeRLM extracts modules and common function-like forms (`def`, `defp`, delegates, guards, macros, and Nx `defn` forms), plus direct call sites that tree-sitter can identify in source. It does not resolve arity, merge multiple clauses into one semantic function, expand macros, resolve aliases/imports, or infer dynamic dispatch.
+Elixir indexing is conservative and source-based. CodeRLM extracts modules and common function-like forms (`def`, `defp`, delegates, guards, macros, and Nx `defn` forms), plus direct call sites that tree-sitter can identify in source. Caller lookup distinguishes local calls from module-qualified calls when the target function's enclosing module is available. It also recognizes direct pipeline calls such as `value |> foo()` and `value |> MyApp.Mod.foo()`, and resolves simple same-file `alias ... as:` calls for caller matching.
+
+Caller results remain line-grounded and intentionally conservative. CodeRLM does not perform whole-program alias/import resolution, macro expansion, compile-time generated call discovery, dynamic dispatch inference, or dataflow analysis. Imported bare calls, generated functions from `use`, captures such as `&foo/1`, and aliases that cannot be resolved from the current source file may need manual review from the returned line context.
 
 ExUnit discovery returns test blocks whose body directly calls the requested symbol, including calls inside nested `describe` blocks. Nested describe names are included in the returned test name when available. Setup callbacks, helper functions, generated tests, and target names that appear only in descriptions, comments, or strings are not treated as proof that a specific test covers the symbol.
 

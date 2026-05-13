@@ -2,6 +2,7 @@ defmodule Fixture.Sample do
   @moduledoc false
   alias Fixture.Accounts.User
   alias Fixture.Accounts.UserProfile, as: AccountUserProfile
+  alias Fixture.AliasRemote, as: RemoteAlias
   import Ecto.Query
   require Logger
   use GenServer
@@ -15,6 +16,9 @@ defmodule Fixture.Sample do
 
     for item <- opts do
       remote = Fixture.Remote.touch(item)
+      aliased = RemoteAlias.touch(item)
+      piped_local = item |> normalize()
+      piped_remote = item |> Fixture.Remote.touch()
       {normalized, remote}
     end
   end
@@ -45,6 +49,13 @@ defmodule Fixture.Sample do
   def with_default(value, opts \\ []), do: {value, opts}
 
   defdelegate delegated(value), to: Fixture.Remote, as: :touch
+
+  def local_pipeline(value) do
+    value
+    |> add()
+  end
+
+  def local_touch(value), do: touch(value)
 end
 
 defmodule Fixture.Remote do
