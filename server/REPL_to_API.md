@@ -123,7 +123,9 @@ List symbols extracted from the codebase. Defaults to all kinds; filter with que
 
 ### Kind values
 
-`function`, `method`, `class`, `struct`, `enum`, `trait`, `interface`, `constant`, `variable`, `type`, `module`
+`function`, `method`, `class`, `struct`, `enum`, `trait`, `interface`, `constant`, `variable`, `type`, `module`, `import`, `test`, `other`
+
+For Elixir files, static `alias`, `import`, `require`, and `use` module relationships are listed as `kind: "import"` symbols. The symbol name is the literal module target, while `signature` preserves the source line, including options such as `as:`. Dynamic relationship targets are not resolved, multi-alias expansion is not canonicalized, and functions injected by `use` macros are not reported as parsed source symbols.
 
 ### Response
 
