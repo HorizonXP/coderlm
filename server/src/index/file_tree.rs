@@ -7,6 +7,15 @@ use super::file_entry::{FileEntry, Language};
 /// Thread-safe file tree backed by a DashMap for concurrent access.
 pub struct FileTree {
     pub files: DashMap<String, FileEntry>,
+    non_code_ranges: DashMap<String, CachedNonCodeRanges>,
+}
+
+#[derive(Clone)]
+pub struct CachedNonCodeRanges {
+    pub size: u64,
+    pub modified: chrono::DateTime<chrono::Utc>,
+    pub language: Language,
+    pub ranges: Vec<(usize, usize)>,
 }
 
 #[derive(Debug, Serialize)]
@@ -19,14 +28,17 @@ impl FileTree {
     pub fn new() -> Self {
         Self {
             files: DashMap::new(),
+            non_code_ranges: DashMap::new(),
         }
     }
 
     pub fn insert(&self, entry: FileEntry) {
+        self.non_code_ranges.remove(&entry.rel_path);
         self.files.insert(entry.rel_path.clone(), entry);
     }
 
     pub fn remove(&self, rel_path: &str) -> Option<FileEntry> {
+        self.non_code_ranges.remove(rel_path);
         self.files.remove(rel_path).map(|(_, v)| v)
     }
 
@@ -53,6 +65,41 @@ impl FileTree {
 
     pub fn all_paths(&self) -> Vec<String> {
         self.files.iter().map(|r| r.key().clone()).collect()
+    }
+
+    pub fn cached_non_code_ranges(
+        &self,
+        rel_path: &str,
+        entry: &FileEntry,
+    ) -> Option<Vec<(usize, usize)>> {
+        self.non_code_ranges.get(rel_path).and_then(|cached| {
+            let cached = cached.value();
+            if cached.size == entry.size
+                && cached.modified == entry.modified
+                && cached.language == entry.language
+            {
+                Some(cached.ranges.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn store_non_code_ranges(
+        &self,
+        rel_path: &str,
+        entry: &FileEntry,
+        ranges: Vec<(usize, usize)>,
+    ) {
+        self.non_code_ranges.insert(
+            rel_path.to_string(),
+            CachedNonCodeRanges {
+                size: entry.size,
+                modified: entry.modified,
+                language: entry.language,
+                ranges,
+            },
+        );
     }
 
     /// Render a tree-like structure string, similar to the `tree` command.
@@ -131,5 +178,51 @@ fn render_tree_node(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    fn entry(rel_path: &str, size: u64, timestamp: i64) -> FileEntry {
+        FileEntry::new(
+            rel_path.to_string(),
+            size,
+            Utc.timestamp_opt(timestamp, 0).unwrap(),
+        )
+    }
+
+    #[test]
+    fn non_code_range_cache_is_tied_to_file_metadata() {
+        let tree = FileTree::new();
+        let original = entry("src/lib.rs", 10, 1);
+        tree.insert(original.clone());
+        tree.store_non_code_ranges("src/lib.rs", &original, vec![(1, 4)]);
+
+        assert_eq!(
+            tree.cached_non_code_ranges("src/lib.rs", &original),
+            Some(vec![(1, 4)])
+        );
+
+        let changed = entry("src/lib.rs", 11, 2);
+        assert_eq!(tree.cached_non_code_ranges("src/lib.rs", &changed), None);
+    }
+
+    #[test]
+    fn inserting_or_removing_file_invalidates_non_code_range_cache() {
+        let tree = FileTree::new();
+        let original = entry("src/lib.rs", 10, 1);
+        tree.insert(original.clone());
+        tree.store_non_code_ranges("src/lib.rs", &original, vec![(1, 4)]);
+
+        let changed = entry("src/lib.rs", 12, 3);
+        tree.insert(changed.clone());
+        assert_eq!(tree.cached_non_code_ranges("src/lib.rs", &changed), None);
+
+        tree.store_non_code_ranges("src/lib.rs", &changed, vec![(2, 5)]);
+        tree.remove("src/lib.rs");
+        assert_eq!(tree.cached_non_code_ranges("src/lib.rs", &changed), None);
     }
 }

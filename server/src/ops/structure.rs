@@ -101,6 +101,8 @@ pub fn get_structure_with_detail(
     // Collect symbols grouped by file
     let mut file_map: std::collections::BTreeMap<String, Vec<SymbolSummary>> =
         std::collections::BTreeMap::new();
+    let mut source_cache: std::collections::BTreeMap<String, Option<String>> =
+        std::collections::BTreeMap::new();
 
     for entry in symbol_table.symbols.iter() {
         let sym = entry.value();
@@ -112,9 +114,15 @@ pub fn get_structure_with_detail(
         }
 
         let source = if detail >= 3 {
-            let abs_path = root.join(&sym.file);
-            std::fs::read_to_string(&abs_path).ok().and_then(|src| {
+            let src = source_cache.entry(sym.file.clone()).or_insert_with(|| {
+                let abs_path = root.join(&sym.file);
+                std::fs::read_to_string(&abs_path).ok()
+            });
+            src.as_ref().and_then(|src| {
                 let start = sym.byte_range.0;
+                if start > src.len() {
+                    return None;
+                }
                 let end = sym.byte_range.1.min(src.len());
                 Some(src[start..end].to_string())
             })
