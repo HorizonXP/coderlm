@@ -4,7 +4,7 @@ use std::sync::Arc;
 use regex::Regex;
 use serde::Serialize;
 
-use crate::index::file_entry::Language;
+use crate::index::file_entry::{FileEntry, Language};
 use crate::index::file_tree::FileTree;
 use crate::symbols::queries;
 
@@ -123,7 +123,7 @@ pub fn grep_with_scope(
     let mut matches = Vec::new();
     let mut total = 0;
 
-    let mut paths: Vec<(String, Language)> = file_tree
+    let mut paths: Vec<(String, FileEntry)> = file_tree
         .files
         .iter()
         .filter(|e| {
@@ -134,11 +134,11 @@ pub fn grep_with_scope(
                 true
             }
         })
-        .map(|e| (e.key().clone(), e.value().language))
+        .map(|e| (e.key().clone(), e.value().clone()))
         .collect();
     paths.sort_by(|a, b| a.0.cmp(&b.0));
 
-    for (rel_path, language) in &paths {
+    for (rel_path, entry) in &paths {
         let abs_path = root.join(rel_path);
         let source = match std::fs::read_to_string(&abs_path) {
             Ok(s) => s,
@@ -146,11 +146,18 @@ pub fn grep_with_scope(
         };
 
         // For scope=code, build a set of byte ranges that are inside comments/strings
-        let excluded_ranges = if scope == GrepScope::Code && language.has_tree_sitter_support() {
-            compute_non_code_ranges(&source, *language)
-        } else {
-            Vec::new()
-        };
+        let excluded_ranges =
+            if scope == GrepScope::Code && entry.language.has_tree_sitter_support() {
+                if let Some(ranges) = file_tree.cached_non_code_ranges(rel_path, entry) {
+                    ranges
+                } else {
+                    let ranges = compute_non_code_ranges(&source, entry.language);
+                    file_tree.store_non_code_ranges(rel_path, entry, ranges.clone());
+                    ranges
+                }
+            } else {
+                Vec::new()
+            };
 
         let lines: Vec<&str> = source.lines().collect();
 

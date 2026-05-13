@@ -172,9 +172,14 @@ pub fn find_callers(
 
     let mut callers = Vec::new();
 
-    for entry in file_tree.files.iter() {
-        let rel_path = entry.key().clone();
-        let language = entry.value().language;
+    let mut paths: Vec<(String, Language)> = file_tree
+        .files
+        .iter()
+        .map(|entry| (entry.key().clone(), entry.value().language))
+        .collect();
+    paths.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (rel_path, language) in paths {
         let abs_path = root.join(&rel_path);
 
         let source = match std::fs::read_to_string(&abs_path) {
@@ -186,10 +191,15 @@ pub fn find_callers(
             continue;
         }
 
+        let remaining = limit.saturating_sub(callers.len());
+        if remaining == 0 {
+            break;
+        }
+
         let file_callers = if language.has_tree_sitter_support() {
-            find_callers_ast(&source, &rel_path, language, &call_name, file)
+            find_callers_ast(&source, &rel_path, language, &call_name, file, remaining)
         } else {
-            find_callers_regex(&source, &rel_path, &call_name, file)
+            find_callers_regex(&source, &rel_path, &call_name, file, remaining)
         };
 
         for caller in file_callers {
@@ -211,25 +221,26 @@ fn find_callers_ast(
     language: Language,
     symbol_name: &str,
     definition_file: &str,
+    limit: usize,
 ) -> Vec<CallerInfo> {
     let config = match queries::get_language_config(language) {
         Some(c) => c,
-        None => return find_callers_regex(source, rel_path, symbol_name, definition_file),
+        None => return find_callers_regex(source, rel_path, symbol_name, definition_file, limit),
     };
 
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&config.language).is_err() {
-        return find_callers_regex(source, rel_path, symbol_name, definition_file);
+        return find_callers_regex(source, rel_path, symbol_name, definition_file, limit);
     }
 
     let tree = match parser.parse(source, None) {
         Some(t) => t,
-        None => return find_callers_regex(source, rel_path, symbol_name, definition_file),
+        None => return find_callers_regex(source, rel_path, symbol_name, definition_file, limit),
     };
 
     let query = match tree_sitter::Query::new(&config.language, config.callers_query) {
         Ok(q) => q,
-        Err(_) => return find_callers_regex(source, rel_path, symbol_name, definition_file),
+        Err(_) => return find_callers_regex(source, rel_path, symbol_name, definition_file, limit),
     };
 
     let capture_names: Vec<String> = query
@@ -266,6 +277,9 @@ fn find_callers_ast(
                         line: line_num,
                         text: line_text,
                     });
+                    if callers.len() >= limit {
+                        return callers;
+                    }
                 }
             }
         }
@@ -280,6 +294,7 @@ fn find_callers_regex(
     rel_path: &str,
     symbol_name: &str,
     definition_file: &str,
+    limit: usize,
 ) -> Vec<CallerInfo> {
     let pattern = match regex::Regex::new(&regex::escape(symbol_name)) {
         Ok(p) => p,
@@ -317,6 +332,9 @@ fn find_callers_regex(
                 line: line_num + 1,
                 text: line.trim().to_string(),
             });
+            if callers.len() >= limit {
+                return callers;
+            }
         }
     }
 
@@ -1074,6 +1092,22 @@ mod tests {
         }
 
         (root, file_tree, symbol_table)
+    }
+
+    #[test]
+    fn regex_caller_lookup_stops_at_limit_within_one_file() {
+        let source = "\
+alpha()
+alpha()
+alpha()
+alpha()
+";
+
+        let callers = find_callers_regex(source, "src/lib.txt", "alpha", "src/other.txt", 2);
+
+        assert_eq!(callers.len(), 2);
+        assert_eq!(callers[0].line, 1);
+        assert_eq!(callers[1].line, 2);
     }
 
     #[test]

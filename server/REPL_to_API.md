@@ -55,6 +55,8 @@ View the codebase file tree. Equivalent to running `tree` with ignore filtering 
 | 2     | + method signatures and parent/owner info                             |
 | 3     | + full source for each symbol                                         |
 
+Cost note: `detail=3` includes source snippets and can produce large responses. The server reads each source file at most once per request, but agents should prefer `detail=1` or `detail=2` for orientation and use `implementation` or `peek` for targeted source.
+
 ### Response: `GET /structure` (detail=0)
 
 ```json
@@ -223,6 +225,8 @@ Find call sites for a symbol across the codebase.
 |---------------------------|--------|-------------------|-------------------------------------|
 | `symbol callers $symbol`  | GET    | `/symbols/callers` | `?symbol=...&file=...&limit=50`    |
 
+Cost note: caller lookup first narrows work to files containing the symbol text, then applies tree-sitter caller queries where available. Results are line-grounded and bounded by `limit`; use smaller limits for common names.
+
 ### Response
 
 ```json
@@ -336,6 +340,8 @@ Regex search across all indexed files. Supports scope-aware filtering and per-fi
 | `context_lines` | 2       | Lines of context before/after each match                               |
 | `scope`         | `all`   | `all` matches everywhere; `code` skips matches inside comment/string AST nodes (per-language tree-sitter aware) |
 | `file`          | —       | Restrict grep to a single file path                                    |
+
+Cost note: `scope=code` parses supported-language files to exclude comments and strings. Non-code ranges are cached per file and invalidated when indexed file metadata changes, so repeated identical queries avoid reparsing unchanged files. Prefer `file=` when the relevant path is known.
 
 ### Response
 
