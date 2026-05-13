@@ -244,6 +244,12 @@ Find test functions that reference a given symbol.
 }
 ```
 
+### Elixir / ExUnit notes
+
+For Elixir, `/symbols/tests` is source-based and conservative. It returns ExUnit `test` blocks whose body contains a tree-sitter call capture matching the requested symbol. Nested `describe` labels are folded into the returned test name when they can be represented from source, while `file`, `line`, and `signature` remain grounded to the actual `test` line.
+
+The endpoint does not execute ExUnit or Mix, expand macros, resolve aliases/imports, infer arity, combine multiple clauses, or attribute setup/helper calls to every test. Generated tests and target names that appear only in descriptions, comments, or strings are unsupported unless the generated source is present as ordinary test calls.
+
 ---
 
 ## symbol list variables

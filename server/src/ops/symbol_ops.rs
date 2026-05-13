@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -799,9 +800,58 @@ fn find_exunit_tests(
             None => continue,
         };
 
-        let query = match tree_sitter::Query::new(
-            &language,
-            r#"
+        let blocks = find_exunit_blocks(&source, &tree, &language);
+        let describes: Vec<_> = blocks
+            .iter()
+            .filter(|block| block.kind == "describe")
+            .collect();
+
+        for block in blocks.iter().filter(|block| block.kind == "test") {
+            if !range_contains_elixir_call(&source, &language, block.start..block.end, symbol_name)
+            {
+                continue;
+            }
+
+            let mut context: Vec<&str> = describes
+                .iter()
+                .filter(|describe| describe.start <= block.start && block.end <= describe.end)
+                .map(|describe| describe.label.as_str())
+                .collect();
+            context.push(block.label.as_str());
+
+            tests.push(TestInfo {
+                name: format!("test {}", context.join(" > ")),
+                file: rel_path.clone(),
+                line: block.line,
+                signature: block.signature.clone(),
+            });
+
+            if tests.len() >= limit {
+                return tests;
+            }
+        }
+    }
+
+    tests
+}
+
+struct ExUnitBlock {
+    kind: String,
+    label: String,
+    start: usize,
+    end: usize,
+    line: usize,
+    signature: String,
+}
+
+fn find_exunit_blocks(
+    source: &str,
+    tree: &tree_sitter::Tree,
+    language: &tree_sitter::Language,
+) -> Vec<ExUnitBlock> {
+    let query = match tree_sitter::Query::new(
+        language,
+        r#"
 (call
   target: (identifier) @test.kind
   (arguments
@@ -812,78 +862,114 @@ fn find_exunit_tests(
     ])
   (#any-of? @test.kind "test" "describe")) @test.def
 "#,
-        ) {
-            Ok(q) => q,
-            Err(_) => continue,
+    ) {
+        Ok(q) => q,
+        Err(_) => return Vec::new(),
+    };
+
+    let capture_names: Vec<String> = query
+        .capture_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let kind_idx = capture_names.iter().position(|n| n == "test.kind");
+    let name_idx = capture_names.iter().position(|n| n == "test.name");
+    let def_idx = capture_names.iter().position(|n| n == "test.def");
+
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let mut blocks = Vec::new();
+
+    while let Some(m) = matches.next() {
+        let mut kind = None;
+        let mut name = None;
+        let mut def_node = None;
+
+        for cap in m.captures {
+            let idx = cap.index as usize;
+            if Some(idx) == kind_idx {
+                kind = cap
+                    .node
+                    .utf8_text(source.as_bytes())
+                    .ok()
+                    .map(str::to_string);
+            } else if Some(idx) == name_idx {
+                name = cap
+                    .node
+                    .utf8_text(source.as_bytes())
+                    .ok()
+                    .map(str::to_string);
+            } else if Some(idx) == def_idx {
+                def_node = Some(cap.node);
+            }
+        }
+
+        let Some(def_node) = def_node else {
+            continue;
         };
+        let kind = kind.unwrap_or_else(|| "test".to_string());
+        let label = clean_elixir_test_name(name.as_deref().unwrap_or(&kind));
 
-        let capture_names: Vec<String> = query
-            .capture_names()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let kind_idx = capture_names.iter().position(|n| n == "test.kind");
-        let name_idx = capture_names.iter().position(|n| n == "test.name");
-        let def_idx = capture_names.iter().position(|n| n == "test.def");
+        blocks.push(ExUnitBlock {
+            kind,
+            label,
+            start: def_node.start_byte(),
+            end: def_node.end_byte().min(source.len()),
+            line: def_node.start_position().row + 1,
+            signature: source
+                .lines()
+                .nth(def_node.start_position().row)
+                .map(|line| line.trim().to_string())
+                .unwrap_or_default(),
+        });
+    }
 
-        let mut cursor = tree_sitter::QueryCursor::new();
-        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    blocks.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
+    blocks
+}
 
-        while let Some(m) = matches.next() {
-            let mut kind = None;
-            let mut name = None;
-            let mut def_node = None;
+fn range_contains_elixir_call(
+    source: &str,
+    language: &tree_sitter::Language,
+    range: Range<usize>,
+    symbol_name: &str,
+) -> bool {
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(language).is_err() {
+        return false;
+    }
 
-            for cap in m.captures {
-                let idx = cap.index as usize;
-                if Some(idx) == kind_idx {
-                    kind = cap
-                        .node
-                        .utf8_text(source.as_bytes())
-                        .ok()
-                        .map(str::to_string);
-                } else if Some(idx) == name_idx {
-                    name = cap
-                        .node
-                        .utf8_text(source.as_bytes())
-                        .ok()
-                        .map(str::to_string);
-                } else if Some(idx) == def_idx {
-                    def_node = Some(cap.node);
-                }
-            }
+    let Some(tree) = parser.parse(source, None) else {
+        return false;
+    };
 
-            let Some(def_node) = def_node else {
-                continue;
-            };
+    let query = match tree_sitter::Query::new(language, queries::elixir::CALLERS_QUERY) {
+        Ok(q) => q,
+        Err(_) => return false,
+    };
 
-            let start = def_node.start_byte();
-            let end = def_node.end_byte().min(source.len());
-            let body = &source[start..end];
-            if !body.contains(symbol_name) {
-                continue;
-            }
+    let capture_names: Vec<String> = query
+        .capture_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let callee_idx = capture_names.iter().position(|n| n == "callee");
 
-            let kind = kind.unwrap_or_else(|| "test".to_string());
-            let label = clean_elixir_test_name(name.as_deref().unwrap_or(&kind));
-            tests.push(TestInfo {
-                name: format!("{} {}", kind, label),
-                file: rel_path.clone(),
-                line: def_node.start_position().row + 1,
-                signature: source
-                    .lines()
-                    .nth(def_node.start_position().row)
-                    .map(|line| line.trim().to_string())
-                    .unwrap_or_else(|| format!("{} {}", kind, label)),
-            });
+    let mut cursor = tree_sitter::QueryCursor::new();
+    cursor.set_byte_range(range);
+    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
 
-            if tests.len() >= limit {
-                return tests;
+    while let Some(m) = matches.next() {
+        for cap in m.captures {
+            if Some(cap.index as usize) == callee_idx
+                && cap.node.utf8_text(source.as_bytes()).unwrap_or("") == symbol_name
+            {
+                return true;
             }
         }
     }
 
-    tests
+    false
 }
 
 fn is_elixir_test_file(path: &str) -> bool {
@@ -1028,9 +1114,53 @@ mod tests {
         .unwrap();
 
         assert_eq!(tests.len(), 1);
-        assert_eq!(tests[0].name, "test public_fun calls normalize");
+        assert_eq!(
+            tests[0].name,
+            "test public_fun behavior > nested context > calls normalize directly"
+        );
         assert_eq!(tests[0].file, TEST_FILE);
-        assert_eq!(tests[0].line, 4);
-        assert_eq!(tests[0].signature, "test \"public_fun calls normalize\" do");
+        assert_eq!(tests[0].line, 11);
+        assert_eq!(tests[0].signature, "test \"calls normalize directly\" do");
+    }
+
+    #[test]
+    fn elixir_fixture_ignores_setup_describe_and_description_only_mentions() {
+        let (root, file_tree, symbol_table) = index_elixir_fixture();
+
+        let tests =
+            find_tests(&root, &file_tree, &symbol_table, "guarded", SAMPLE_FILE, 10).unwrap();
+
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].name, "test guarded can be referenced separately");
+        assert_eq!(tests[0].file, TEST_FILE);
+        assert_eq!(tests[0].line, 27);
+        assert_eq!(
+            tests[0].signature,
+            "test \"guarded can be referenced separately\" do"
+        );
+    }
+
+    #[test]
+    fn elixir_fixture_keeps_helper_tests_source_line_grounded_and_bounded() {
+        let (root, file_tree, symbol_table) = index_elixir_fixture();
+
+        let tests = find_tests(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "helper_for_public_fun",
+            TEST_FILE,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(tests.len(), 1);
+        assert_eq!(
+            tests[0].name,
+            "test guarded context without matching test body > uses a different helper"
+        );
+        assert_eq!(tests[0].file, TEST_FILE);
+        assert_eq!(tests[0].line, 22);
+        assert_eq!(tests[0].signature, "test \"uses a different helper\" do");
     }
 }
