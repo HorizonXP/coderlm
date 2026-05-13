@@ -258,6 +258,8 @@ Same shape as symbols response.
 }
 ```
 
+Elixir/ExUnit test discovery is conservative. It reports source `test` blocks that directly call the requested symbol and includes nested `describe` context in the test name when available. It does not run Mix, expand macros, resolve aliases/imports, infer arity, merge function clauses, or assume setup/helper calls cover unrelated tests. Generated tests and description/comment/string-only mentions are outside the supported inference model.
+
 ### variables
 ```json
 {
