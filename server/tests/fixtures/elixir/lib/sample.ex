@@ -22,6 +22,21 @@ defmodule Fixture.Sample do
   def string_noise do
     "normalize(user) and guarded(value) are only text"
   end
+
+  def add(value), do: value + 1
+
+  def add(left, right), do: left + right
+
+  def multi_clause(:ok), do: :ok
+  def multi_clause(:error), do: :error
+
+  def pattern_count({left, right}, [head | _tail], %{flag: flag}) when flag do
+    {left, right, head}
+  end
+
+  def with_default(value, opts \\ []), do: {value, opts}
+
+  defdelegate delegated(value), to: Fixture.Remote, as: :touch
 end
 
 defmodule Fixture.Remote do

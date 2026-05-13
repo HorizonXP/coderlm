@@ -150,6 +150,13 @@ List symbols extracted from the codebase. Defaults to all kinds; filter with que
 
 Find symbols by name substring. Optionally restrict to a single file.
 
+Elixir functions are indexed as `name/arity` so overloaded arities are
+distinguishable. Bare-name searches still match those symbols; repeated
+multi-clause definitions with the same `name/arity` are returned as separate
+clause symbols using a stable `#clauseN` suffix after the first clause. Default
+arguments are reported by the arity written in source; synthetic lower arities
+are not generated.
+
 | REPL operation          | Method | Endpoint          | Params                                |
 |-------------------------|--------|-------------------|---------------------------------------|
 | `symbol search $query`  | GET    | `/symbols/search` | `?q=handler&limit=20&file=src/main.rs`|
@@ -186,6 +193,9 @@ curl -s -X POST -H "X-Session-Id: $SID" -H "Content-Type: application/json" \
 ## symbol implementation
 
 Retrieve the full source code of a symbol (function body, struct definition, etc.).
+
+For Elixir functions, pass either `name/arity` for an exact clause lookup or the
+bare name for the first matching function in the requested file.
 
 | REPL operation                   | Method | Endpoint                  | Params                            |
 |----------------------------------|--------|---------------------------|-----------------------------------|

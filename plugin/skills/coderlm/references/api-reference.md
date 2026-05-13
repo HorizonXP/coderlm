@@ -94,6 +94,14 @@ python3 cli define-symbol scan_directory --file src/index/walker.rs "Walks codeb
 python3 cli redefine-symbol scan_directory --file src/index/walker.rs "Updated description"
 ```
 
+Elixir functions are exposed as `name/arity` in symbol list/search output.
+Searching by bare name still matches those symbols, and implementation lookup
+accepts either `name/arity` or the bare name for the first matching function in
+the requested file. Multi-clause functions with the same `name/arity` are kept
+as separate clause symbols with `#clauseN` suffixes after the first clause.
+Default arguments use the arity written in source; synthetic lower arities are
+not emitted.
+
 ### Content Operations
 
 ```bash
