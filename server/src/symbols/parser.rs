@@ -182,6 +182,10 @@ pub fn extract_symbols_from_file(
         }
     }
 
+    if language == Language::Elixir {
+        apply_elixir_function_identities(&mut symbols);
+    }
+
     // Deduplicate symbols by (file, name): keep the one with the larger byte range
     // (the more complete definition). On equal ranges, prefer specific kinds
     // (Struct/Enum/Class/etc.) over the generic Constant/Variable/Other catch-alls
@@ -251,6 +255,120 @@ pub fn extract_symbols_from_file(
 
     debug!("Extracted {} symbols from {}", symbols.len(), rel_path);
     Ok(symbols)
+}
+
+fn apply_elixir_function_identities(symbols: &mut [Symbol]) {
+    use std::collections::HashMap;
+
+    let mut clause_counts: HashMap<String, usize> = HashMap::new();
+
+    for symbol in symbols.iter_mut() {
+        if symbol.kind != SymbolKind::Function {
+            continue;
+        }
+
+        let arity = elixir_arity_from_signature(&symbol.signature, &symbol.name);
+        let name_with_arity = format!("{}/{}", symbol.name, arity);
+        let clause_count = clause_counts.entry(name_with_arity.clone()).or_insert(0);
+        *clause_count += 1;
+
+        symbol.name = if *clause_count == 1 {
+            name_with_arity
+        } else {
+            format!("{}#clause{}", name_with_arity, clause_count)
+        };
+    }
+}
+
+fn elixir_arity_from_signature(signature: &str, name: &str) -> usize {
+    let Some(name_start) = signature.find(name) else {
+        return 0;
+    };
+    let after_name = &signature[name_start + name.len()..];
+    let Some(paren_offset) = after_name.find('(') else {
+        return 0;
+    };
+    let args_start = name_start + name.len() + paren_offset;
+    let Some(args_end) = find_matching_paren(signature, args_start) else {
+        return 0;
+    };
+
+    count_elixir_arguments(&signature[args_start + 1..args_end])
+}
+
+fn find_matching_paren(text: &str, open_byte: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string: Option<char> = None;
+    let mut escaped = false;
+
+    for (idx, ch) in text[open_byte..].char_indices() {
+        let byte_idx = open_byte + idx;
+
+        if let Some(quote) = in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote {
+                in_string = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => in_string = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(byte_idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn count_elixir_arguments(args: &str) -> usize {
+    if args.trim().is_empty() {
+        return 0;
+    }
+
+    let mut count = 1usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut in_string: Option<char> = None;
+    let mut escaped = false;
+
+    for ch in args.chars() {
+        if let Some(quote) = in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote {
+                in_string = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => in_string = Some(ch),
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            ',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => count += 1,
+            _ => {}
+        }
+    }
+
+    count
 }
 
 /// Extract symbols from all files in the tree. Runs on blocking threads
