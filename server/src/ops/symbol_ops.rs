@@ -97,13 +97,13 @@ pub fn get_implementation(
         let candidates = symbol_table.search(symbol_name, 50);
         candidates
             .into_iter()
-            .find(|s| s.file == file && s.name.to_lowercase() == symbol_name.to_lowercase())
+            .find(|s| s.file == file && symbol_matches_query(s, symbol_name))
             .or_else(|| {
                 // Broader: any symbol in the file whose name contains the query
                 let file_symbols = symbol_table.list_by_file(file);
                 file_symbols
                     .into_iter()
-                    .find(|s| s.name.to_lowercase() == symbol_name.to_lowercase())
+                    .find(|s| symbol_matches_query(s, symbol_name))
             })
     });
 
@@ -165,9 +165,9 @@ pub fn find_callers(
     limit: usize,
 ) -> Result<Vec<CallerInfo>, String> {
     // Verify symbol exists
-    let _sym = symbol_table
-        .get(file, symbol_name)
+    let sym = find_symbol_for_lookup(symbol_table, file, symbol_name)
         .ok_or_else(|| format!("Symbol '{}' not found in '{}'", symbol_name, file))?;
+    let call_name = callable_name_for_symbol(&sym);
 
     let mut callers = Vec::new();
 
@@ -181,14 +181,14 @@ pub fn find_callers(
             Err(_) => continue,
         };
 
-        if !source.contains(symbol_name) {
+        if !source.contains(&call_name) {
             continue;
         }
 
         let file_callers = if language.has_tree_sitter_support() {
-            find_callers_ast(&source, &rel_path, language, symbol_name, file)
+            find_callers_ast(&source, &rel_path, language, &call_name, file)
         } else {
-            find_callers_regex(&source, &rel_path, symbol_name, file)
+            find_callers_regex(&source, &rel_path, &call_name, file)
         };
 
         for caller in file_callers {
@@ -416,12 +416,16 @@ pub fn find_tests(
     file: &str,
     limit: usize,
 ) -> Result<Vec<TestInfo>, String> {
-    let sym = symbol_table
-        .get(file, symbol_name)
+    let sym = find_symbol_for_lookup(symbol_table, file, symbol_name)
         .ok_or_else(|| format!("Symbol '{}' not found in '{}'", symbol_name, file))?;
 
     if sym.language == Language::Elixir {
-        return Ok(find_exunit_tests(root, file_tree, symbol_name, limit));
+        return Ok(find_exunit_tests(
+            root,
+            file_tree,
+            &callable_name_for_symbol(&sym),
+            limit,
+        ));
     }
 
     let mut tests = Vec::new();
@@ -459,6 +463,43 @@ pub fn find_tests(
     }
 
     Ok(tests)
+}
+
+fn find_symbol_for_lookup(
+    symbol_table: &Arc<SymbolTable>,
+    file: &str,
+    symbol_name: &str,
+) -> Option<Symbol> {
+    symbol_table.get(file, symbol_name).or_else(|| {
+        let mut file_symbols = symbol_table.list_by_file(file);
+        file_symbols.sort_by_key(|s| s.line_range.0);
+        file_symbols
+            .into_iter()
+            .find(|s| symbol_matches_query(s, symbol_name))
+    })
+}
+
+fn symbol_matches_query(symbol: &Symbol, query: &str) -> bool {
+    let symbol_name = symbol.name.to_lowercase();
+    let query = query.to_lowercase();
+
+    symbol_name == query
+        || (symbol.language == Language::Elixir && elixir_bare_symbol_name(&symbol_name) == query)
+}
+
+fn callable_name_for_symbol(symbol: &Symbol) -> String {
+    if symbol.language == Language::Elixir {
+        elixir_bare_symbol_name(&symbol.name).to_string()
+    } else {
+        symbol.name.clone()
+    }
+}
+
+fn elixir_bare_symbol_name(name: &str) -> &str {
+    let without_clause = name.split_once("#clause").map_or(name, |(base, _)| base);
+    without_clause
+        .split_once('/')
+        .map_or(without_clause, |(bare, _)| bare)
 }
 
 fn is_test_symbol(sym: &Symbol) -> bool {
@@ -522,8 +563,7 @@ pub fn list_variables(
     function_name: &str,
     file: &str,
 ) -> Result<Vec<VariableInfo>, String> {
-    let sym = symbol_table
-        .get(file, function_name)
+    let sym = find_symbol_for_lookup(symbol_table, file, function_name)
         .ok_or_else(|| format!("Symbol '{}' not found in '{}'", function_name, file))?;
 
     let abs_path = root.join(&sym.file);
@@ -534,9 +574,19 @@ pub fn list_variables(
     let end = sym.byte_range.1.min(source.len());
 
     let variables = if sym.language.has_tree_sitter_support() {
-        list_variables_ast(&source, sym.language, start, end, function_name)
+        list_variables_ast(
+            &source,
+            sym.language,
+            start,
+            end,
+            &callable_name_for_symbol(&sym),
+        )
     } else {
-        list_variables_regex(&source[start..end], sym.language, function_name)
+        list_variables_regex(
+            &source[start..end],
+            sym.language,
+            &callable_name_for_symbol(&sym),
+        )
     };
 
     Ok(variables)
@@ -946,15 +996,15 @@ mod tests {
 
         let sample = symbol_table.get(SAMPLE_FILE, "Fixture.Sample").unwrap();
         assert_eq!(sample.kind, SymbolKind::Module);
-        assert_eq!(sample.line_range, (1, 25));
+        assert_eq!(sample.line_range, (1, 40));
         assert_eq!(sample.signature, "defmodule Fixture.Sample do");
 
-        let public_fun = symbol_table.get(SAMPLE_FILE, "public_fun").unwrap();
+        let public_fun = symbol_table.get(SAMPLE_FILE, "public_fun/2").unwrap();
         assert_eq!(public_fun.kind, SymbolKind::Function);
         assert_eq!(public_fun.line_range, (5, 12));
         assert_eq!(public_fun.signature, "def public_fun(user, opts) do");
 
-        let guarded = symbol_table.get(SAMPLE_FILE, "guarded").unwrap();
+        let guarded = symbol_table.get(SAMPLE_FILE, "guarded/1").unwrap();
         assert_eq!(guarded.kind, SymbolKind::Function);
         assert_eq!(guarded.line_range, (14, 16));
         assert_eq!(
@@ -962,10 +1012,73 @@ mod tests {
             "def guarded(value) when is_integer(value) do"
         );
 
-        let private = symbol_table.get(SAMPLE_FILE, "normalize").unwrap();
+        let private = symbol_table.get(SAMPLE_FILE, "normalize/1").unwrap();
         assert_eq!(private.kind, SymbolKind::Function);
         assert_eq!(private.line_range, (18, 20));
         assert_eq!(private.signature, "defp normalize(user) do");
+    }
+
+    #[test]
+    fn elixir_fixture_distinguishes_arities_and_multi_clauses() {
+        let (_root, _file_tree, symbol_table) = index_elixir_fixture();
+
+        assert_eq!(
+            symbol_table.get(SAMPLE_FILE, "add/1").unwrap().signature,
+            "def add(value), do: value + 1"
+        );
+        assert_eq!(
+            symbol_table.get(SAMPLE_FILE, "add/2").unwrap().signature,
+            "def add(left, right), do: left + right"
+        );
+        assert_eq!(
+            symbol_table
+                .get(SAMPLE_FILE, "multi_clause/1")
+                .unwrap()
+                .signature,
+            "def multi_clause(:ok), do: :ok"
+        );
+        assert_eq!(
+            symbol_table
+                .get(SAMPLE_FILE, "multi_clause/1#clause2")
+                .unwrap()
+                .signature,
+            "def multi_clause(:error), do: :error"
+        );
+        assert_eq!(
+            symbol_table
+                .get(SAMPLE_FILE, "pattern_count/3")
+                .unwrap()
+                .signature,
+            "def pattern_count({left, right}, [head | _tail], %{flag: flag}) when flag do"
+        );
+        assert_eq!(
+            symbol_table
+                .get(SAMPLE_FILE, "with_default/2")
+                .unwrap()
+                .signature,
+            "def with_default(value, opts \\\\ []), do: {value, opts}"
+        );
+        assert!(symbol_table.get(SAMPLE_FILE, "with_default/1").is_none());
+        assert_eq!(
+            symbol_table
+                .get(SAMPLE_FILE, "delegated/1")
+                .unwrap()
+                .signature,
+            "defdelegate delegated(value), to: Fixture.Remote, as: :touch"
+        );
+    }
+
+    #[test]
+    fn elixir_fixture_bare_name_search_remains_useful() {
+        let (_root, _file_tree, symbol_table) = index_elixir_fixture();
+
+        let mut names: Vec<_> = search_symbols(&symbol_table, "add", 10, Some(SAMPLE_FILE))
+            .into_iter()
+            .map(|symbol| symbol.name)
+            .collect();
+        names.sort();
+
+        assert_eq!(names, ["add/1", "add/2"]);
     }
 
     #[test]
@@ -990,7 +1103,7 @@ mod tests {
             &root,
             &file_tree,
             &symbol_table,
-            "normalize",
+            "normalize/1",
             SAMPLE_FILE,
             10,
         )
@@ -1021,7 +1134,7 @@ mod tests {
             &root,
             &file_tree,
             &symbol_table,
-            "public_fun",
+            "public_fun/2",
             SAMPLE_FILE,
             10,
         )
