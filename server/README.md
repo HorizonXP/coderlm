@@ -168,6 +168,14 @@ curl localhost:3000/api/v1/history
 - **Filesystem watcher is automatic.** When you edit files in a project, the server detects changes within ~500ms and re-indexes. No restart needed.
 - **Annotations can be persisted.** Use `save-annotations` to write definitions and marks to `.coderlm/annotations.json` in the project root. Annotations are auto-loaded when a new session is created for that project. The `Stop` hook also auto-saves annotations before cleanup.
 
+## Indexing and watcher tuning
+
+- `--max-file-size <BYTES>` skips files larger than the configured size during cold indexing and removes them from the live index if an edit pushes them over the limit. The default is `1,000,000` bytes.
+- `--max-projects <N>` bounds the number of simultaneously indexed project roots. When the limit is reached, the least recently used project is evicted with its watcher and symbols.
+- `CODERLM_DISABLE_WATCHER=1` starts projects without filesystem watchers. Use this for generated-heavy workspaces when manual session recreation is preferable to live re-indexing.
+- Built-in ignored directories include dependency, build, VCS, cache, coverage, and Journey runtime directories such as `node_modules`, `vendor`, `target`, `.git`, `.cache`, and `.journey`. These ignores are applied in addition to `.gitignore`.
+- Watcher updates are debounced for roughly 500 ms and coalesce duplicate events for the same path before updating the file tree or reparsing symbols.
+
 ## Supported languages (tree-sitter)
 
 Symbol extraction (functions, classes, structs, methods, etc.) is available for:
