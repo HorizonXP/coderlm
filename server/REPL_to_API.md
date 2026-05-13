@@ -152,6 +152,13 @@ List symbols extracted from the codebase. Defaults to all kinds; filter with que
 
 Find symbols by name substring. Optionally restrict to a single file.
 
+Elixir functions are indexed as `name/arity` so overloaded arities are
+distinguishable. Bare-name searches still match those symbols; repeated
+multi-clause definitions with the same `name/arity` are returned as separate
+clause symbols using a stable `#clauseN` suffix after the first clause. Default
+arguments are reported by the arity written in source; synthetic lower arities
+are not generated.
+
 | REPL operation          | Method | Endpoint          | Params                                |
 |-------------------------|--------|-------------------|---------------------------------------|
 | `symbol search $query`  | GET    | `/symbols/search` | `?q=handler&limit=20&file=src/main.rs`|
@@ -188,6 +195,9 @@ curl -s -X POST -H "X-Session-Id: $SID" -H "Content-Type: application/json" \
 ## symbol implementation
 
 Retrieve the full source code of a symbol (function body, struct definition, etc.).
+
+For Elixir functions, pass either `name/arity` for an exact clause lookup or the
+bare name for the first matching function in the requested file.
 
 | REPL operation                   | Method | Endpoint                  | Params                            |
 |----------------------------------|--------|---------------------------|-----------------------------------|
@@ -247,6 +257,12 @@ Find test functions that reference a given symbol.
   ]
 }
 ```
+
+### Elixir / ExUnit notes
+
+For Elixir, `/symbols/tests` is source-based and conservative. It returns ExUnit `test` blocks whose body contains a tree-sitter call capture matching the requested symbol. Nested `describe` labels are folded into the returned test name when they can be represented from source, while `file`, `line`, and `signature` remain grounded to the actual `test` line.
+
+The endpoint does not execute ExUnit or Mix, expand macros, resolve aliases/imports, infer arity, combine multiple clauses, or attribute setup/helper calls to every test. Generated tests and target names that appear only in descriptions, comments, or strings are unsupported unless the generated source is present as ordinary test calls.
 
 ---
 

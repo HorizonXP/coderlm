@@ -186,6 +186,12 @@ Options:
 
 Languages with tree-sitter support produce full symbol tables (functions, classes, methods, callers, variables). SQL uses regex fallbacks for variable and definition detection. All file types appear in the file tree and are searchable via peek/grep.
 
+### Elixir Support Boundaries
+
+Elixir indexing is conservative and source-based. CodeRLM extracts modules and common function-like forms (`def`, `defp`, delegates, guards, macros, and Nx `defn` forms), plus direct call sites that tree-sitter can identify in source. It does not resolve arity, merge multiple clauses into one semantic function, expand macros, resolve aliases/imports, or infer dynamic dispatch.
+
+ExUnit discovery returns test blocks whose body directly calls the requested symbol, including calls inside nested `describe` blocks. Nested describe names are included in the returned test name when available. Setup callbacks, helper functions, generated tests, and target names that appear only in descriptions, comments, or strings are not treated as proof that a specific test covers the symbol.
+
 ## API
 
 All endpoints under `/api/v1/`. See [`server/REPL_to_API.md`](server/REPL_to_API.md) for the full endpoint reference with curl examples.
