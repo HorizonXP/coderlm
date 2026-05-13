@@ -60,12 +60,12 @@ pub const VARIABLES_QUERY: &str = r#"
   (#any-of? @ignore "def" "defp" "defdelegate" "defguard" "defguardp" "defmacro" "defmacrop" "defn" "defnp"))
 
 (binary_operator
-  operator: "="
-  left: (identifier) @var.name)
+  left: (identifier) @var.name
+  "=")
 
 (binary_operator
-  operator: "<-"
-  left: (identifier) @var.name)
+  left: (identifier) @var.name
+  "<-")
 "#;
 
 pub fn config() -> LanguageConfig {

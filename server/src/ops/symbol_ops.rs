@@ -899,3 +899,138 @@ pub struct VariableInfo {
     pub name: String,
     pub function: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    use crate::index::file_entry::FileEntry;
+
+    const SAMPLE_FILE: &str = "lib/sample.ex";
+    const TEST_FILE: &str = "test/sample_test.exs";
+
+    fn fixture_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("elixir")
+    }
+
+    fn index_elixir_fixture() -> (std::path::PathBuf, Arc<FileTree>, Arc<SymbolTable>) {
+        let root = fixture_root();
+        let file_tree = Arc::new(FileTree::new());
+        let symbol_table = Arc::new(SymbolTable::new());
+
+        for rel_path in [SAMPLE_FILE, TEST_FILE] {
+            let abs_path = root.join(rel_path);
+            let size = std::fs::metadata(&abs_path).unwrap().len();
+            let entry = FileEntry::new(rel_path.to_string(), size, Utc::now());
+            file_tree.insert(entry);
+
+            let language = file_tree.get(rel_path).unwrap().language;
+            for symbol in
+                crate::symbols::parser::extract_symbols_from_file(&root, rel_path, language)
+                    .unwrap()
+            {
+                symbol_table.insert(symbol);
+            }
+        }
+
+        (root, file_tree, symbol_table)
+    }
+
+    #[test]
+    fn elixir_fixture_extracts_modules_public_private_and_guarded_functions() {
+        let (_root, _file_tree, symbol_table) = index_elixir_fixture();
+
+        let sample = symbol_table.get(SAMPLE_FILE, "Fixture.Sample").unwrap();
+        assert_eq!(sample.kind, SymbolKind::Module);
+        assert_eq!(sample.line_range, (1, 25));
+        assert_eq!(sample.signature, "defmodule Fixture.Sample do");
+
+        let public_fun = symbol_table.get(SAMPLE_FILE, "public_fun").unwrap();
+        assert_eq!(public_fun.kind, SymbolKind::Function);
+        assert_eq!(public_fun.line_range, (5, 12));
+        assert_eq!(public_fun.signature, "def public_fun(user, opts) do");
+
+        let guarded = symbol_table.get(SAMPLE_FILE, "guarded").unwrap();
+        assert_eq!(guarded.kind, SymbolKind::Function);
+        assert_eq!(guarded.line_range, (14, 16));
+        assert_eq!(
+            guarded.signature,
+            "def guarded(value) when is_integer(value) do"
+        );
+
+        let private = symbol_table.get(SAMPLE_FILE, "normalize").unwrap();
+        assert_eq!(private.kind, SymbolKind::Function);
+        assert_eq!(private.line_range, (18, 20));
+        assert_eq!(private.signature, "defp normalize(user) do");
+    }
+
+    #[test]
+    fn elixir_fixture_returns_implementation_by_stable_byte_range() {
+        let (root, _file_tree, symbol_table) = index_elixir_fixture();
+
+        let implementation =
+            get_implementation(&root, &symbol_table, "public_fun", SAMPLE_FILE).unwrap();
+
+        assert!(implementation.starts_with("def public_fun(user, opts) do"));
+        assert!(implementation.contains("normalized = normalize(user)"));
+        assert!(implementation.contains("remote = Fixture.Remote.touch(item)"));
+        assert!(implementation.ends_with("  end"));
+        assert!(!implementation.contains("def guarded"));
+    }
+
+    #[test]
+    fn elixir_fixture_finds_code_callers_without_comment_or_string_hits() {
+        let (root, file_tree, symbol_table) = index_elixir_fixture();
+
+        let callers = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "normalize",
+            SAMPLE_FILE,
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(callers.len(), 1);
+        assert_eq!(callers[0].file, SAMPLE_FILE);
+        assert_eq!(callers[0].line, 6);
+        assert_eq!(callers[0].text, "normalized = normalize(user)");
+    }
+
+    #[test]
+    fn elixir_fixture_extracts_params_assignments_and_generator_bindings_once() {
+        let (root, _file_tree, symbol_table) = index_elixir_fixture();
+
+        let variables = list_variables(&root, &symbol_table, "public_fun", SAMPLE_FILE).unwrap();
+        let mut names: Vec<_> = variables.iter().map(|var| var.name.as_str()).collect();
+        names.sort_unstable();
+
+        assert_eq!(names, ["item", "normalized", "opts", "remote", "user"]);
+    }
+
+    #[test]
+    fn elixir_fixture_finds_exunit_test_block_referencing_symbol() {
+        let (root, file_tree, symbol_table) = index_elixir_fixture();
+
+        let tests = find_tests(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "public_fun",
+            SAMPLE_FILE,
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].name, "test public_fun calls normalize");
+        assert_eq!(tests[0].file, TEST_FILE);
+        assert_eq!(tests[0].line, 4);
+        assert_eq!(tests[0].signature, "test \"public_fun calls normalize\" do");
+    }
+}
