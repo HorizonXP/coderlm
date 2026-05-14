@@ -169,6 +169,11 @@ pub fn find_callers(
     let sym = find_symbol_for_lookup(symbol_table, file, symbol_name)
         .ok_or_else(|| format!("Symbol '{}' not found in '{}'", symbol_name, file))?;
     let call_name = callable_name_for_symbol(&sym);
+    let elixir_target_module = if sym.language == Language::Elixir {
+        elixir_enclosing_module(symbol_table, &sym)
+    } else {
+        None
+    };
 
     let mut callers = Vec::new();
 
@@ -197,7 +202,16 @@ pub fn find_callers(
         }
 
         let file_callers = if language.has_tree_sitter_support() {
-            find_callers_ast(&source, &rel_path, language, &call_name, file, remaining)
+            find_callers_ast(
+                &source,
+                &rel_path,
+                language,
+                &call_name,
+                file,
+                elixir_target_module.as_deref(),
+                symbol_table,
+                remaining,
+            )
         } else {
             find_callers_regex(&source, &rel_path, &call_name, file, remaining)
         };
@@ -221,6 +235,8 @@ fn find_callers_ast(
     language: Language,
     symbol_name: &str,
     definition_file: &str,
+    elixir_target_module: Option<&str>,
+    symbol_table: &Arc<SymbolTable>,
     limit: usize,
 ) -> Vec<CallerInfo> {
     let config = match queries::get_language_config(language) {
@@ -253,12 +269,37 @@ fn find_callers_ast(
     let mut cursor = tree_sitter::QueryCursor::new();
     let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
     let mut callers = Vec::new();
+    let mut seen_call_sites = std::collections::HashSet::new();
+    let elixir_modules = if language == Language::Elixir {
+        elixir_modules_in_file(symbol_table, rel_path)
+    } else {
+        Vec::new()
+    };
+    let elixir_aliases = if language == Language::Elixir {
+        elixir_aliases_in_file(symbol_table, rel_path)
+    } else {
+        Vec::new()
+    };
 
     while let Some(m) = matches.next() {
         for cap in m.captures {
             if Some(cap.index as usize) == callee_idx {
                 let text = cap.node.utf8_text(source.as_bytes()).unwrap_or("");
                 if text == symbol_name {
+                    if !seen_call_sites.insert(cap.node.start_byte()) {
+                        continue;
+                    }
+                    if language == Language::Elixir
+                        && !elixir_call_matches_target(
+                            source,
+                            cap.node,
+                            elixir_target_module,
+                            &elixir_modules,
+                            &elixir_aliases,
+                        )
+                    {
+                        continue;
+                    }
                     let line_num = cap.node.start_position().row + 1;
                     // Skip the definition itself
                     if rel_path == definition_file {
@@ -286,6 +327,95 @@ fn find_callers_ast(
     }
 
     callers
+}
+
+fn elixir_enclosing_module(symbol_table: &Arc<SymbolTable>, symbol: &Symbol) -> Option<String> {
+    elixir_modules_in_file(symbol_table, &symbol.file)
+        .into_iter()
+        .filter(|(_, start, end)| symbol.byte_range.0 >= *start && symbol.byte_range.1 <= *end)
+        .min_by_key(|(_, start, end)| end.saturating_sub(*start))
+        .map(|(name, _, _)| name)
+}
+
+fn elixir_modules_in_file(
+    symbol_table: &Arc<SymbolTable>,
+    rel_path: &str,
+) -> Vec<(String, usize, usize)> {
+    symbol_table
+        .list_by_file(rel_path)
+        .into_iter()
+        .filter(|s| s.kind == SymbolKind::Module)
+        .map(|s| (s.name, s.byte_range.0, s.byte_range.1))
+        .collect()
+}
+
+fn elixir_aliases_in_file(
+    symbol_table: &Arc<SymbolTable>,
+    rel_path: &str,
+) -> Vec<(String, String)> {
+    let mut aliases = Vec::new();
+
+    for symbol in symbol_table
+        .list_by_file(rel_path)
+        .into_iter()
+        .filter(|s| s.kind == SymbolKind::Import && s.signature.trim_start().starts_with("alias "))
+    {
+        let target = symbol.name;
+        if target.is_empty() {
+            continue;
+        }
+
+        let alias = symbol
+            .signature
+            .split_once(" as: ")
+            .map(|(_, alias)| alias.trim().trim_start_matches(':').to_string())
+            .unwrap_or_else(|| target.rsplit('.').next().unwrap_or(&target).to_string());
+
+        aliases.push((alias, target));
+    }
+
+    aliases
+}
+
+fn elixir_call_matches_target(
+    source: &str,
+    callee_node: tree_sitter::Node,
+    target_module: Option<&str>,
+    modules: &[(String, usize, usize)],
+    aliases: &[(String, String)],
+) -> bool {
+    let Some(target_module) = target_module else {
+        return true;
+    };
+
+    if let Some(receiver) = elixir_call_receiver(source, callee_node) {
+        let receiver = aliases
+            .iter()
+            .find_map(|(alias, target)| (alias == &receiver).then_some(target.as_str()))
+            .unwrap_or(receiver.as_str());
+        return receiver == target_module;
+    }
+
+    modules.iter().any(|(name, start, end)| {
+        name == target_module
+            && callee_node.start_byte() >= *start
+            && callee_node.end_byte() <= *end
+    })
+}
+
+fn elixir_call_receiver(source: &str, callee_node: tree_sitter::Node) -> Option<String> {
+    let dot = callee_node.parent()?;
+    if dot.kind() != "dot" {
+        return None;
+    }
+
+    let receiver = dot.child_by_field_name("left")?;
+    receiver
+        .utf8_text(source.as_bytes())
+        .ok()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
 }
 
 /// Regex fallback for files without tree-sitter support.
@@ -1062,6 +1192,8 @@ mod tests {
     use crate::index::file_entry::FileEntry;
 
     const SAMPLE_FILE: &str = "lib/sample.ex";
+    const ALIAS_REMOTE_FILE: &str = "lib/alias_remote.ex";
+    const OTHER_REMOTE_FILE: &str = "lib/other_remote.ex";
     const TEST_FILE: &str = "test/sample_test.exs";
 
     fn fixture_root() -> std::path::PathBuf {
@@ -1076,7 +1208,7 @@ mod tests {
         let file_tree = Arc::new(FileTree::new());
         let symbol_table = Arc::new(SymbolTable::new());
 
-        for rel_path in [SAMPLE_FILE, TEST_FILE] {
+        for rel_path in [SAMPLE_FILE, ALIAS_REMOTE_FILE, OTHER_REMOTE_FILE, TEST_FILE] {
             let abs_path = root.join(rel_path);
             let size = std::fs::metadata(&abs_path).unwrap().len();
             let entry = FileEntry::new(rel_path.to_string(), size, Utc::now());
@@ -1116,17 +1248,17 @@ alpha()
 
         let sample = symbol_table.get(SAMPLE_FILE, "Fixture.Sample").unwrap();
         assert_eq!(sample.kind, SymbolKind::Module);
-        assert_eq!(sample.line_range, (1, 48));
+        assert_eq!(sample.line_range, (1, 59));
         assert_eq!(sample.signature, "defmodule Fixture.Sample do");
 
         let public_fun = symbol_table.get(SAMPLE_FILE, "public_fun/2").unwrap();
         assert_eq!(public_fun.kind, SymbolKind::Function);
-        assert_eq!(public_fun.line_range, (12, 20));
+        assert_eq!(public_fun.line_range, (13, 24));
         assert_eq!(public_fun.signature, "def public_fun(user, opts) do");
 
         let guarded = symbol_table.get(SAMPLE_FILE, "guarded/1").unwrap();
         assert_eq!(guarded.kind, SymbolKind::Function);
-        assert_eq!(guarded.line_range, (22, 24));
+        assert_eq!(guarded.line_range, (26, 28));
         assert_eq!(
             guarded.signature,
             "def guarded(value) when is_integer(value) do"
@@ -1134,7 +1266,7 @@ alpha()
 
         let private = symbol_table.get(SAMPLE_FILE, "normalize/1").unwrap();
         assert_eq!(private.kind, SymbolKind::Function);
-        assert_eq!(private.line_range, (26, 28));
+        assert_eq!(private.line_range, (30, 32));
         assert_eq!(private.signature, "defp normalize(user) do");
     }
 
@@ -1161,6 +1293,15 @@ alpha()
         assert_eq!(imported.kind, SymbolKind::Import);
         assert_eq!(imported.signature, "import Ecto.Query");
 
+        let aliased_remote = symbol_table
+            .get(SAMPLE_FILE, "Fixture.AliasRemote")
+            .unwrap();
+        assert_eq!(aliased_remote.kind, SymbolKind::Import);
+        assert_eq!(
+            aliased_remote.signature,
+            "alias Fixture.AliasRemote, as: RemoteAlias"
+        );
+
         let required = symbol_table.get(SAMPLE_FILE, "Logger").unwrap();
         assert_eq!(required.kind, SymbolKind::Import);
         assert_eq!(required.signature, "require Logger");
@@ -1181,6 +1322,7 @@ alpha()
             [
                 "Fixture.Accounts.User",
                 "Fixture.Accounts.UserProfile",
+                "Fixture.AliasRemote",
                 "Ecto.Query",
                 "Logger",
                 "GenServer"
@@ -1325,10 +1467,87 @@ alpha()
         )
         .unwrap();
 
+        assert_eq!(callers.len(), 2);
+        assert_eq!(callers[0].file, SAMPLE_FILE);
+        assert_eq!(callers[0].line, 14);
+        assert_eq!(callers[0].text, "normalized = normalize(user)");
+        assert_eq!(callers[1].file, SAMPLE_FILE);
+        assert_eq!(callers[1].line, 20);
+        assert_eq!(callers[1].text, "piped_local = item |> normalize()");
+    }
+
+    #[test]
+    fn elixir_fixture_finds_pipeline_local_callers() {
+        let (root, file_tree, symbol_table) = index_elixir_fixture();
+
+        let callers =
+            find_callers(&root, &file_tree, &symbol_table, "add/1", SAMPLE_FILE, 10).unwrap();
+
         assert_eq!(callers.len(), 1);
         assert_eq!(callers[0].file, SAMPLE_FILE);
-        assert_eq!(callers[0].line, 13);
-        assert_eq!(callers[0].text, "normalized = normalize(user)");
+        assert_eq!(callers[0].line, 55);
+        assert_eq!(callers[0].text, "|> add()");
+    }
+
+    #[test]
+    fn elixir_fixture_finds_remote_alias_and_pipeline_callers_with_context() {
+        let (root, file_tree, symbol_table) = index_elixir_fixture();
+
+        let callers =
+            find_callers(&root, &file_tree, &symbol_table, "touch/1", SAMPLE_FILE, 10).unwrap();
+        let lines: Vec<_> = callers
+            .iter()
+            .map(|caller| (caller.file.as_str(), caller.line, caller.text.as_str()))
+            .collect();
+
+        assert_eq!(
+            lines,
+            [
+                (SAMPLE_FILE, 18, "remote = Fixture.Remote.touch(item)"),
+                (
+                    SAMPLE_FILE,
+                    21,
+                    "piped_remote = item |> Fixture.Remote.touch()"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn elixir_fixture_finds_alias_qualified_callers_conservatively() {
+        let (root, file_tree, symbol_table) = index_elixir_fixture();
+
+        let callers = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "touch/1",
+            ALIAS_REMOTE_FILE,
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(callers.len(), 1);
+        assert_eq!(callers[0].file, SAMPLE_FILE);
+        assert_eq!(callers[0].line, 19);
+        assert_eq!(callers[0].text, "aliased = RemoteAlias.touch(item)");
+    }
+
+    #[test]
+    fn elixir_fixture_keeps_same_named_remote_callers_conservative() {
+        let (root, file_tree, symbol_table) = index_elixir_fixture();
+
+        let callers = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "touch/1",
+            OTHER_REMOTE_FILE,
+            10,
+        )
+        .unwrap();
+
+        assert!(callers.is_empty());
     }
 
     #[test]
@@ -1342,10 +1561,13 @@ alpha()
         assert_eq!(
             names,
             [
+                "aliased",
                 "dynamic_module",
                 "item",
                 "normalized",
                 "opts",
+                "piped_local",
+                "piped_remote",
                 "remote",
                 "user"
             ]

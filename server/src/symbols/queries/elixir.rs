@@ -39,6 +39,11 @@ pub const CALLERS_QUERY: &str = r#"
 (binary_operator
   operator: "|>"
   right: (call
+    target: (identifier) @callee))
+
+(binary_operator
+  operator: "|>"
+  right: (call
     target: (dot
       right: (identifier) @callee)))
 "#;

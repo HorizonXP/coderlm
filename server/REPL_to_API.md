@@ -227,6 +227,8 @@ Find call sites for a symbol across the codebase.
 
 Cost note: caller lookup first narrows work to files containing the symbol text, then applies tree-sitter caller queries where available. Results are line-grounded and bounded by `limit`; use smaller limits for common names.
 
+For Elixir, caller lookup keeps local calls, module-qualified calls, simple same-file alias-qualified calls, and pipeline calls distinct when the target function's enclosing module is known. For example, `foo()`, `MyApp.Mod.foo()`, and `value |> MyApp.Mod.foo()` are matched against the available module context instead of treating every `foo` capture as equivalent. When alias/import context is unavailable, results stay conservative and source-grounded rather than claiming exact ownership. Macro-expanded calls, captures such as `&foo/1`, imported bare calls from other modules, dynamic dispatch, and whole-program alias resolution are not inferred.
+
 ### Response
 
 ```json
