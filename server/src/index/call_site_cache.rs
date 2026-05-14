@@ -27,8 +27,11 @@ impl CallSiteCacheIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallSiteFact {
     pub callee: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
     pub line: usize,
     pub text: String,
+    pub receiver: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,22 +94,22 @@ pub enum CallSiteCacheLookup {
     Miss(CallSiteCacheMissReason),
 }
 
-pub fn extract_call_site_facts(source: &str, language: Language) -> Vec<CallSiteFact> {
+pub fn extract_call_site_facts(source: &str, language: Language) -> Option<Vec<CallSiteFact>> {
     let Some(config) = queries::get_language_config(language) else {
-        return Vec::new();
+        return None;
     };
 
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&config.language).is_err() {
-        return Vec::new();
+        return None;
     }
 
     let Some(tree) = parser.parse(source, None) else {
-        return Vec::new();
+        return None;
     };
 
     let Ok(query) = tree_sitter::Query::new(&config.language, config.callers_query) else {
-        return Vec::new();
+        return None;
     };
 
     let capture_names: Vec<String> = query
@@ -115,7 +118,7 @@ pub fn extract_call_site_facts(source: &str, language: Language) -> Vec<CallSite
         .map(|s| s.to_string())
         .collect();
     let Some(callee_idx) = capture_names.iter().position(|n| n == "callee") else {
-        return Vec::new();
+        return None;
     };
 
     let mut cursor = tree_sitter::QueryCursor::new();
@@ -133,6 +136,7 @@ pub fn extract_call_site_facts(source: &str, language: Language) -> Vec<CallSite
                 .utf8_text(source.as_bytes())
                 .unwrap_or("")
                 .to_string();
+            let receiver = call_site_receiver(source, language, cap.node);
             let line = cap.node.start_position().row + 1;
             let text = source
                 .lines()
@@ -140,11 +144,41 @@ pub fn extract_call_site_facts(source: &str, language: Language) -> Vec<CallSite
                 .map(|l| l.trim().to_string())
                 .unwrap_or_default();
 
-            facts.push(CallSiteFact { callee, line, text });
+            facts.push(CallSiteFact {
+                callee,
+                start_byte: cap.node.start_byte(),
+                end_byte: cap.node.end_byte(),
+                line,
+                text,
+                receiver,
+            });
         }
     }
 
-    facts
+    Some(facts)
+}
+
+fn call_site_receiver(
+    source: &str,
+    language: Language,
+    callee_node: tree_sitter::Node,
+) -> Option<String> {
+    if language != Language::Elixir {
+        return None;
+    }
+
+    let dot = callee_node.parent()?;
+    if dot.kind() != "dot" {
+        return None;
+    }
+
+    let receiver = dot.child_by_field_name("left")?;
+    receiver
+        .utf8_text(source.as_bytes())
+        .ok()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
 }
 
 #[cfg(test)]

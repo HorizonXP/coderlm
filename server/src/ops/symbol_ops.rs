@@ -1,14 +1,38 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
 use tree_sitter::StreamingIterator;
 
+use crate::config;
+use crate::index::call_site_cache::{CallSiteCacheLookup, CallSiteFact};
 use crate::index::file_entry::Language;
 use crate::index::file_tree::FileTree;
 use crate::symbols::SymbolTable;
 use crate::symbols::queries::{self, QueryKind};
 use crate::symbols::symbol::{Symbol, SymbolKind};
+
+#[cfg(test)]
+thread_local! {
+    static CALLER_AST_PARSE_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn increment_caller_ast_parse_count() {
+    CALLER_AST_PARSE_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+fn reset_caller_ast_parse_count() {
+    CALLER_AST_PARSE_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn caller_ast_parse_count() -> usize {
+    CALLER_AST_PARSE_COUNT.with(Cell::get)
+}
 
 pub fn list_symbols(
     symbol_table: &Arc<SymbolTable>,
@@ -185,6 +209,35 @@ pub fn find_callers(
     paths.sort_by(|a, b| a.0.cmp(&b.0));
 
     for (rel_path, language) in paths {
+        let remaining = limit.saturating_sub(callers.len());
+        if remaining == 0 {
+            break;
+        }
+
+        if language.has_tree_sitter_support() {
+            if let CallSiteCacheLookup::Hit(facts) =
+                file_tree.call_site_cache_lookup(&rel_path, config::DEFAULT_MAX_FILE_SIZE)
+            {
+                let file_callers = find_callers_cached(
+                    &facts,
+                    &rel_path,
+                    language,
+                    &call_name,
+                    file,
+                    elixir_target_module.as_deref(),
+                    symbol_table,
+                    remaining,
+                );
+                for caller in file_callers {
+                    callers.push(caller);
+                    if callers.len() >= limit {
+                        return Ok(callers);
+                    }
+                }
+                continue;
+            }
+        }
+
         let abs_path = root.join(&rel_path);
 
         let source = match std::fs::read_to_string(&abs_path) {
@@ -194,11 +247,6 @@ pub fn find_callers(
 
         if !source.contains(&call_name) {
             continue;
-        }
-
-        let remaining = limit.saturating_sub(callers.len());
-        if remaining == 0 {
-            break;
         }
 
         let file_callers = if language.has_tree_sitter_support() {
@@ -227,6 +275,63 @@ pub fn find_callers(
     Ok(callers)
 }
 
+fn find_callers_cached(
+    facts: &[CallSiteFact],
+    rel_path: &str,
+    language: Language,
+    symbol_name: &str,
+    definition_file: &str,
+    elixir_target_module: Option<&str>,
+    symbol_table: &Arc<SymbolTable>,
+    limit: usize,
+) -> Vec<CallerInfo> {
+    let mut callers = Vec::new();
+    let mut seen_call_sites = std::collections::HashSet::new();
+    let elixir_modules = if language == Language::Elixir {
+        elixir_modules_in_file(symbol_table, rel_path)
+    } else {
+        Vec::new()
+    };
+    let elixir_aliases = if language == Language::Elixir {
+        elixir_aliases_in_file(symbol_table, rel_path)
+    } else {
+        Vec::new()
+    };
+
+    for fact in facts {
+        if fact.callee != symbol_name {
+            continue;
+        }
+        if !seen_call_sites.insert(fact.start_byte) {
+            continue;
+        }
+        if language == Language::Elixir
+            && !cached_elixir_call_matches_target(
+                fact,
+                elixir_target_module,
+                &elixir_modules,
+                &elixir_aliases,
+            )
+        {
+            continue;
+        }
+        if rel_path == definition_file && is_definition_line(&fact.text, symbol_name, language) {
+            continue;
+        }
+
+        callers.push(CallerInfo {
+            file: rel_path.to_string(),
+            line: fact.line,
+            text: fact.text.clone(),
+        });
+        if callers.len() >= limit {
+            return callers;
+        }
+    }
+
+    callers
+}
+
 /// AST-aware caller detection: parse the file, run the callers query,
 /// and check if any call-expression callee matches the target symbol name.
 fn find_callers_ast(
@@ -243,6 +348,9 @@ fn find_callers_ast(
         Some(c) => c,
         None => return find_callers_regex(source, rel_path, symbol_name, definition_file, limit),
     };
+
+    #[cfg(test)]
+    increment_caller_ast_parse_count();
 
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&config.language).is_err() {
@@ -404,6 +512,29 @@ fn elixir_call_matches_target(
     })
 }
 
+fn cached_elixir_call_matches_target(
+    fact: &CallSiteFact,
+    target_module: Option<&str>,
+    modules: &[(String, usize, usize)],
+    aliases: &[(String, String)],
+) -> bool {
+    let Some(target_module) = target_module else {
+        return true;
+    };
+
+    if let Some(receiver) = fact.receiver.as_deref() {
+        let receiver = aliases
+            .iter()
+            .find_map(|(alias, target)| (alias.as_str() == receiver).then_some(target.as_str()))
+            .unwrap_or(receiver);
+        return receiver == target_module;
+    }
+
+    modules.iter().any(|(name, start, end)| {
+        name == target_module && fact.start_byte >= *start && fact.end_byte <= *end
+    })
+}
+
 fn elixir_call_receiver(source: &str, callee_node: tree_sitter::Node) -> Option<String> {
     let dot = callee_node.parent()?;
     if dot.kind() != "dot" {
@@ -550,7 +681,7 @@ fn is_definition_line(line: &str, name: &str, language: Language) -> bool {
     }
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 pub struct CallerInfo {
     pub file: String,
     pub line: usize,
@@ -1191,7 +1322,9 @@ pub struct VariableInfo {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use tempfile::TempDir;
 
+    use crate::index::call_site_cache::extract_call_site_facts;
     use crate::index::file_entry::FileEntry;
 
     const SAMPLE_FILE: &str = "lib/sample.ex";
@@ -1229,6 +1362,42 @@ mod tests {
         (root, file_tree, symbol_table)
     }
 
+    fn index_rust_fixture(files: &[(&str, &str)]) -> (TempDir, Arc<FileTree>, Arc<SymbolTable>) {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        let file_tree = Arc::new(FileTree::new());
+        let symbol_table = Arc::new(SymbolTable::new());
+
+        for (rel_path, source) in files {
+            let abs_path = root.join(rel_path);
+            std::fs::create_dir_all(abs_path.parent().unwrap()).unwrap();
+            std::fs::write(&abs_path, source).unwrap();
+            let size = std::fs::metadata(&abs_path).unwrap().len();
+            file_tree.insert(FileEntry::new(rel_path.to_string(), size, Utc::now()));
+        }
+
+        symbol_table.insert(Symbol {
+            name: "target".to_string(),
+            kind: SymbolKind::Function,
+            file: "src/lib.rs".to_string(),
+            byte_range: (0, 16),
+            line_range: (1, 1),
+            language: Language::Rust,
+            signature: "fn target() {}".to_string(),
+            definition: None,
+            parent: None,
+        });
+
+        (temp_dir, file_tree, symbol_table)
+    }
+
+    fn store_cached_call_sites(root: &std::path::Path, file_tree: &FileTree, rel_path: &str) {
+        let source = std::fs::read_to_string(root.join(rel_path)).unwrap();
+        let entry = file_tree.get(rel_path).unwrap();
+        let facts = extract_call_site_facts(&source, entry.language).unwrap();
+        file_tree.store_call_sites(&entry, facts).unwrap();
+    }
+
     #[test]
     fn regex_caller_lookup_stops_at_limit_within_one_file() {
         let source = "\
@@ -1243,6 +1412,94 @@ alpha()
         assert_eq!(callers.len(), 2);
         assert_eq!(callers[0].line, 1);
         assert_eq!(callers[1].line, 2);
+    }
+
+    #[test]
+    fn caller_lookup_uses_fresh_cache_without_reparsing_and_preserves_limit() {
+        let (temp_dir, file_tree, symbol_table) = index_rust_fixture(&[
+            (
+                "src/lib.rs",
+                "\
+fn target() {}
+fn first() { target(); }
+fn second() { target(); }
+",
+            ),
+            (
+                "src/other.rs",
+                "\
+fn third() { target(); }
+",
+            ),
+        ]);
+        let root = temp_dir.path().to_path_buf();
+
+        reset_caller_ast_parse_count();
+        let uncached =
+            find_callers(&root, &file_tree, &symbol_table, "target", "src/lib.rs", 2).unwrap();
+        assert_eq!(caller_ast_parse_count(), 1);
+        assert_eq!(uncached.len(), 2);
+
+        store_cached_call_sites(&root, &file_tree, "src/lib.rs");
+        store_cached_call_sites(&root, &file_tree, "src/other.rs");
+
+        reset_caller_ast_parse_count();
+        let cached =
+            find_callers(&root, &file_tree, &symbol_table, "target", "src/lib.rs", 2).unwrap();
+
+        assert_eq!(cached, uncached);
+        assert_eq!(caller_ast_parse_count(), 0);
+    }
+
+    #[test]
+    fn caller_lookup_falls_back_when_cache_is_missing_or_language_is_unsupported() {
+        let (temp_dir, file_tree, symbol_table) = index_rust_fixture(&[
+            ("src/lib.rs", "fn target() {}\nfn first() { target(); }\n"),
+            ("notes.txt", "target is mentioned here\n"),
+        ]);
+        let root = temp_dir.path().to_path_buf();
+
+        reset_caller_ast_parse_count();
+        let callers =
+            find_callers(&root, &file_tree, &symbol_table, "target", "src/lib.rs", 10).unwrap();
+
+        assert_eq!(caller_ast_parse_count(), 1);
+        assert_eq!(
+            callers
+                .iter()
+                .map(|caller| (caller.file.as_str(), caller.line, caller.text.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("notes.txt", 1, "target is mentioned here"),
+                ("src/lib.rs", 2, "fn first() { target(); }")
+            ]
+        );
+    }
+
+    #[test]
+    fn caller_lookup_ignores_stale_cache_after_direct_metadata_mismatch() {
+        let (temp_dir, file_tree, symbol_table) =
+            index_rust_fixture(&[("src/lib.rs", "fn target() {}\nfn old() { target(); }\n")]);
+        let root = temp_dir.path().to_path_buf();
+        store_cached_call_sites(&root, &file_tree, "src/lib.rs");
+
+        let new_source = "\
+fn target() {}
+fn unrelated() {}
+fn fresh() { target(); }
+";
+        std::fs::write(root.join("src/lib.rs"), new_source).unwrap();
+        let size = std::fs::metadata(root.join("src/lib.rs")).unwrap().len();
+        file_tree.insert(FileEntry::new("src/lib.rs".to_string(), size, Utc::now()));
+
+        reset_caller_ast_parse_count();
+        let callers =
+            find_callers(&root, &file_tree, &symbol_table, "target", "src/lib.rs", 10).unwrap();
+
+        assert_eq!(caller_ast_parse_count(), 1);
+        assert_eq!(callers.len(), 1);
+        assert_eq!(callers[0].line, 3);
+        assert_eq!(callers[0].text, "fn fresh() { target(); }");
     }
 
     #[test]

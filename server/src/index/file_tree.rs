@@ -250,8 +250,11 @@ mod tests {
     fn fact(callee: &str) -> CallSiteFact {
         CallSiteFact {
             callee: callee.to_string(),
+            start_byte: 0,
+            end_byte: callee.len(),
             line: 1,
             text: format!("{callee}();"),
+            receiver: None,
         }
     }
 
