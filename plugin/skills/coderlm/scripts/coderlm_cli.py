@@ -15,7 +15,7 @@ Usage:
   python3 coderlm_cli.py impl SYMBOL --file FILE
   python3 coderlm_cli.py callers SYMBOL --file FILE [--limit N]
   python3 coderlm_cli.py tests SYMBOL --file FILE [--limit N]
-  python3 coderlm_cli.py grep PATTERN [--max-matches N] [--scope all|code] [--file FILE]
+  python3 coderlm_cli.py grep PATTERN [--max-matches N] [--scope all|code] [--file FILE] [--file-match exact|suffix|contains]
   python3 coderlm_cli.py peek FILE [--start N] [--end N]
   python3 coderlm_cli.py symbols [--kind KIND] [--file FILE] [--limit N]
   python3 coderlm_cli.py structure [--depth N]
@@ -295,6 +295,8 @@ def cmd_grep(args: argparse.Namespace) -> None:
         params["scope"] = args.scope
     if args.file is not None:
         params["file"] = args.file
+    if args.file_match is not None:
+        params["file_match"] = args.file_match
     _output(_get(state, "/grep", params))
 
 
@@ -449,12 +451,20 @@ def tests(symbol: str, file: str, limit: int = 20):
     return result
 
 
-def grep(pattern: str, max_matches: int = 50, scope: str = "all", file: str | None = None):
-    """Regex search across files. scope='code' skips comments/strings."""
+def grep(
+    pattern: str,
+    max_matches: int = 50,
+    scope: str = "all",
+    file: str | None = None,
+    file_match: str | None = None,
+):
+    """Regex search across files. file_match may be 'exact', 'suffix', or 'contains'."""
     state = _load_state()
     params = {"pattern": pattern, "max_matches": max_matches, "scope": scope}
     if file:
         params["file"] = file
+    if file_match:
+        params["file_match"] = file_match
     result = _safe_get(state, "/grep", params)
     print(json.dumps(result, indent=2))
     return result
@@ -611,7 +621,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_grep.add_argument("--context-lines", type=int, default=None)
     p_grep.add_argument("--scope", choices=["all", "code"], default=None,
                          help="Scope filter: 'all' (default) or 'code' (skip comments/strings)")
-    p_grep.add_argument("--file", help="Restrict grep to this file path")
+    p_grep.add_argument(
+        "--file",
+        help="Filter by file path; without --file-match this uses legacy exact/contains/suffix matching",
+    )
+    p_grep.add_argument(
+        "--file-match",
+        choices=["exact", "suffix", "contains"],
+        default=None,
+        help="Match mode for --file. Explicit modes require exactly one matching project-relative path.",
+    )
     p_grep.set_defaults(func=cmd_grep)
 
     # chunks

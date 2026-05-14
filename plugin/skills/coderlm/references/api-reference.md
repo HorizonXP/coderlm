@@ -114,12 +114,17 @@ python3 cli grep "DashMap" [--max-matches 50] [--context-lines 2]
 # Scope-aware grep: only match in code (skip comments and strings)
 python3 cli grep "DashMap" --scope code
 
-# Restrict grep to one file
-python3 cli grep "DashMap" --file src/index/file_tree.rs
+# Exact project-relative file match
+python3 cli grep "DashMap" --file src/index/file_tree.rs --file-match exact
+
+# Unique suffix match
+python3 cli grep "DashMap" --file file_tree.rs --file-match suffix
 
 # Compute byte-range chunks for a file
 python3 cli chunks src/main.rs [--size 5000] [--overlap 200]
 ```
+
+For `grep`, `--file` alone keeps legacy broad matching: exact path, path contains, or suffix. `--file-match exact`, `--file-match suffix`, and `--file-match contains` map to the server's `file_match` parameter and require exactly one indexed file; zero matches or multiple matches return an error.
 
 ### Batch and Exec Modes
 

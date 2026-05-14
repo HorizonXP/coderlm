@@ -221,7 +221,7 @@ All endpoints are under `/api/v1`. Data endpoints require `X-Session-Id` header 
 | GET    | `/symbols/tests`            | Yes              | Find tests that reference a symbol   |
 | GET    | `/symbols/variables`        | Yes              | List local variables in a function   |
 | GET    | `/peek`                     | Yes              | Read a line range from a file        |
-| GET    | `/grep`                     | Yes              | Regex search (`?scope=code` skips comments/strings; `?file=` to scope) |
+| GET    | `/grep`                     | Yes              | Regex search (`?scope=code` skips comments/strings; `?file=` filters paths; `?file_match=exact|suffix|contains` requires one unambiguous match) |
 | GET    | `/chunk_indices`            | Yes              | Compute byte-range chunks for a file |
 | GET    | `/history`                  | Optional         | With session: session history. Without: all sessions (admin) |
 | POST   | `/annotations/save`         | Yes              | Persist annotations to `.coderlm/annotations.json` |

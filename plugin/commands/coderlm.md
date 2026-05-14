@@ -54,10 +54,13 @@ python3 $CLI impl function_name --file path     # Get exact implementation
 python3 $CLI callers function_name --file path  # Who calls this function?
 python3 $CLI tests symbol --file path           # Find tests covering this symbol
 python3 $CLI grep "pattern" --scope code        # Scope-aware pattern search
+python3 $CLI grep "pattern" --file path --file-match exact  # Exact project-relative file search
 python3 $CLI peek path --start N --end N        # Read a specific line range
 python3 $CLI symbols --file path --kind KIND    # List symbols in a file
 python3 $CLI variables func --file path         # List local variables
 ```
+
+For grep file filters, `--file` alone keeps legacy exact/contains/suffix matching and can search more than one file. Add `--file-match exact`, `suffix`, or `contains` to require a single unambiguous indexed path.
 
 ## How to Explore
 
