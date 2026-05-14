@@ -163,16 +163,24 @@ fn call_site_receiver(
     language: Language,
     callee_node: tree_sitter::Node,
 ) -> Option<String> {
-    if language != Language::Elixir {
-        return None;
-    }
+    let receiver = match language {
+        Language::Elixir => {
+            let dot = callee_node.parent()?;
+            if dot.kind() != "dot" {
+                return None;
+            }
+            dot.child_by_field_name("left")?
+        }
+        Language::Python => {
+            let attribute = callee_node.parent()?;
+            if attribute.kind() != "attribute" {
+                return None;
+            }
+            attribute.child_by_field_name("object")?
+        }
+        _ => return None,
+    };
 
-    let dot = callee_node.parent()?;
-    if dot.kind() != "dot" {
-        return None;
-    }
-
-    let receiver = dot.child_by_field_name("left")?;
     receiver
         .utf8_text(source.as_bytes())
         .ok()

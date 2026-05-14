@@ -224,6 +224,7 @@ pub fn find_callers(
                     language,
                     &call_name,
                     file,
+                    sym.kind,
                     elixir_target_module.as_deref(),
                     symbol_table,
                     remaining,
@@ -256,6 +257,7 @@ pub fn find_callers(
                 language,
                 &call_name,
                 file,
+                sym.kind,
                 elixir_target_module.as_deref(),
                 symbol_table,
                 remaining,
@@ -281,6 +283,7 @@ fn find_callers_cached(
     language: Language,
     symbol_name: &str,
     definition_file: &str,
+    target_kind: SymbolKind,
     elixir_target_module: Option<&str>,
     symbol_table: &Arc<SymbolTable>,
     limit: usize,
@@ -315,6 +318,11 @@ fn find_callers_cached(
         {
             continue;
         }
+        if language == Language::Python
+            && !python_call_matches_target(target_kind, fact.receiver.as_deref())
+        {
+            continue;
+        }
         if rel_path == definition_file && is_definition_line(&fact.text, symbol_name, language) {
             continue;
         }
@@ -340,6 +348,7 @@ fn find_callers_ast(
     language: Language,
     symbol_name: &str,
     definition_file: &str,
+    target_kind: SymbolKind,
     elixir_target_module: Option<&str>,
     symbol_table: &Arc<SymbolTable>,
     limit: usize,
@@ -405,6 +414,14 @@ fn find_callers_ast(
                             elixir_target_module,
                             &elixir_modules,
                             &elixir_aliases,
+                        )
+                    {
+                        continue;
+                    }
+                    if language == Language::Python
+                        && !python_call_matches_target(
+                            target_kind,
+                            python_call_receiver(source, cap.node).as_deref(),
                         )
                     {
                         continue;
@@ -542,6 +559,29 @@ fn elixir_call_receiver(source: &str, callee_node: tree_sitter::Node) -> Option<
     }
 
     let receiver = dot.child_by_field_name("left")?;
+    receiver
+        .utf8_text(source.as_bytes())
+        .ok()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn python_call_matches_target(target_kind: SymbolKind, receiver: Option<&str>) -> bool {
+    match target_kind {
+        SymbolKind::Function | SymbolKind::Test => receiver.is_none(),
+        SymbolKind::Method => receiver.is_some(),
+        _ => true,
+    }
+}
+
+fn python_call_receiver(source: &str, callee_node: tree_sitter::Node) -> Option<String> {
+    let attribute = callee_node.parent()?;
+    if attribute.kind() != "attribute" {
+        return None;
+    }
+
+    let receiver = attribute.child_by_field_name("object")?;
     receiver
         .utf8_text(source.as_bytes())
         .ok()
@@ -1331,6 +1371,9 @@ mod tests {
     const ALIAS_REMOTE_FILE: &str = "lib/alias_remote.ex";
     const OTHER_REMOTE_FILE: &str = "lib/other_remote.ex";
     const TEST_FILE: &str = "test/sample_test.exs";
+    const PY_CALLER_FILE: &str = "caller_precision.py";
+    const PY_FREE_FILE: &str = "free_target.py";
+    const PY_METHOD_FILE: &str = "method_target.py";
 
     fn fixture_root() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1345,6 +1388,36 @@ mod tests {
         let symbol_table = Arc::new(SymbolTable::new());
 
         for rel_path in [SAMPLE_FILE, ALIAS_REMOTE_FILE, OTHER_REMOTE_FILE, TEST_FILE] {
+            let abs_path = root.join(rel_path);
+            let size = std::fs::metadata(&abs_path).unwrap().len();
+            let entry = FileEntry::new(rel_path.to_string(), size, Utc::now());
+            file_tree.insert(entry);
+
+            let language = file_tree.get(rel_path).unwrap().language;
+            for symbol in
+                crate::symbols::parser::extract_symbols_from_file(&root, rel_path, language)
+                    .unwrap()
+            {
+                symbol_table.insert(symbol);
+            }
+        }
+
+        (root, file_tree, symbol_table)
+    }
+
+    fn python_fixture_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("python")
+    }
+
+    fn index_python_fixture() -> (std::path::PathBuf, Arc<FileTree>, Arc<SymbolTable>) {
+        let root = python_fixture_root();
+        let file_tree = Arc::new(FileTree::new());
+        let symbol_table = Arc::new(SymbolTable::new());
+
+        for rel_path in [PY_CALLER_FILE, PY_FREE_FILE, PY_METHOD_FILE] {
             let abs_path = root.join(rel_path);
             let size = std::fs::metadata(&abs_path).unwrap().len();
             let entry = FileEntry::new(rel_path.to_string(), size, Utc::now());
@@ -1500,6 +1573,114 @@ fn fresh() { target(); }
         assert_eq!(callers.len(), 1);
         assert_eq!(callers[0].line, 3);
         assert_eq!(callers[0].text, "fn fresh() { target(); }");
+    }
+
+    #[test]
+    fn python_fixture_filters_attribute_calls_for_free_function_targets() {
+        let (root, file_tree, symbol_table) = index_python_fixture();
+
+        let callers = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "normalize",
+            PY_FREE_FILE,
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(
+            callers
+                .iter()
+                .map(|caller| (caller.file.as_str(), caller.line, caller.text.as_str()))
+                .collect::<Vec<_>>(),
+            [(PY_CALLER_FILE, 6, "return normalize(value)")]
+        );
+
+        for rel_path in [PY_CALLER_FILE, PY_FREE_FILE, PY_METHOD_FILE] {
+            store_cached_call_sites(&root, &file_tree, rel_path);
+        }
+
+        let cached_callers = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "normalize",
+            PY_FREE_FILE,
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(cached_callers, callers);
+    }
+
+    #[test]
+    fn python_fixture_keeps_attribute_calls_for_method_targets_conservatively() {
+        let (root, file_tree, symbol_table) = index_python_fixture();
+
+        let target = symbol_table.get(PY_METHOD_FILE, "normalize").unwrap();
+        assert_eq!(target.kind, SymbolKind::Method);
+
+        let callers = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "normalize",
+            PY_METHOD_FILE,
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(
+            callers
+                .iter()
+                .map(|caller| (caller.file.as_str(), caller.line, caller.text.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (PY_CALLER_FILE, 10, "return formatter.normalize(value)"),
+                (PY_CALLER_FILE, 14, "return helpers.normalize(value)"),
+                (PY_CALLER_FILE, 23, "return factory().normalize(value)")
+            ]
+        );
+    }
+
+    #[test]
+    fn python_ambiguous_symbol_kind_keeps_broad_call_shape_matching() {
+        let (root, file_tree, symbol_table) = index_python_fixture();
+        symbol_table.insert(Symbol {
+            name: "normalize".to_string(),
+            kind: SymbolKind::Other,
+            file: "ambiguous.py".to_string(),
+            byte_range: (0, 0),
+            line_range: (1, 1),
+            language: Language::Python,
+            signature: "normalize".to_string(),
+            definition: None,
+            parent: None,
+        });
+
+        let callers = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "normalize",
+            "ambiguous.py",
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(
+            callers
+                .iter()
+                .map(|caller| (caller.file.as_str(), caller.line, caller.text.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (PY_CALLER_FILE, 6, "return normalize(value)"),
+                (PY_CALLER_FILE, 10, "return formatter.normalize(value)"),
+                (PY_CALLER_FILE, 14, "return helpers.normalize(value)"),
+                (PY_CALLER_FILE, 23, "return factory().normalize(value)")
+            ]
+        );
     }
 
     #[test]
