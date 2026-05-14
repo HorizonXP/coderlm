@@ -79,6 +79,44 @@ pub enum GrepScope {
     Code,
 }
 
+/// File filter matching mode for grep `file=` requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileMatchMode {
+    /// Match only the exact project-relative file path.
+    Exact,
+    /// Match a project-relative file path suffix.
+    Suffix,
+    /// Match any project-relative file path containing the filter.
+    Contains,
+}
+
+impl FileMatchMode {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "exact" => Some(FileMatchMode::Exact),
+            "suffix" => Some(FileMatchMode::Suffix),
+            "contains" => Some(FileMatchMode::Contains),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            FileMatchMode::Exact => "exact",
+            FileMatchMode::Suffix => "suffix",
+            FileMatchMode::Contains => "contains",
+        }
+    }
+
+    fn matches(self, path: &str, filter: &str) -> bool {
+        match self {
+            FileMatchMode::Exact => path == filter,
+            FileMatchMode::Suffix => path.ends_with(filter),
+            FileMatchMode::Contains => path.contains(filter),
+        }
+    }
+}
+
 impl GrepScope {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -106,6 +144,7 @@ pub fn grep(
         context_lines,
         GrepScope::All,
         None,
+        None,
     )
 }
 
@@ -117,6 +156,7 @@ pub fn grep_with_scope(
     context_lines: usize,
     scope: GrepScope,
     file_filter: Option<&str>,
+    file_match: Option<FileMatchMode>,
 ) -> Result<GrepResponse, String> {
     let re = Regex::new(pattern).map_err(|e| format!("Invalid regex: {}", e))?;
 
@@ -126,17 +166,10 @@ pub fn grep_with_scope(
     let mut paths: Vec<(String, FileEntry)> = file_tree
         .files
         .iter()
-        .filter(|e| {
-            if let Some(filter) = file_filter {
-                let key = e.key();
-                key == filter || key.contains(filter) || key.ends_with(filter)
-            } else {
-                true
-            }
-        })
         .map(|e| (e.key().clone(), e.value().clone()))
         .collect();
     paths.sort_by(|a, b| a.0.cmp(&b.0));
+    paths = filter_grep_paths(paths, file_filter, file_match)?;
 
     for (rel_path, entry) in &paths {
         let abs_path = root.join(rel_path);
@@ -218,6 +251,231 @@ pub fn grep_with_scope(
         total_matches: total,
         truncated: total > max_matches,
     })
+}
+
+fn filter_grep_paths(
+    mut paths: Vec<(String, FileEntry)>,
+    file_filter: Option<&str>,
+    file_match: Option<FileMatchMode>,
+) -> Result<Vec<(String, FileEntry)>, String> {
+    let Some(filter) = file_filter else {
+        if file_match.is_some() {
+            return Err("file_match requires the file parameter".to_string());
+        }
+        return Ok(paths);
+    };
+
+    if let Some(mode) = file_match {
+        paths.retain(|(path, _)| mode.matches(path, filter));
+
+        if paths.is_empty() {
+            return Err(format!(
+                "No file matched '{}' with file_match={}",
+                filter,
+                mode.as_str()
+            ));
+        }
+
+        if paths.len() > 1 {
+            let matched_paths: Vec<&str> = paths.iter().map(|(path, _)| path.as_str()).collect();
+            return Err(format!(
+                "Ambiguous file filter '{}' with file_match={} matched {} files: {}",
+                filter,
+                mode.as_str(),
+                matched_paths.len(),
+                matched_paths.join(", ")
+            ));
+        }
+
+        return Ok(paths);
+    }
+
+    paths.retain(|(path, _)| path == filter || path.contains(filter) || path.ends_with(filter));
+    Ok(paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn add_file(root: &Path, file_tree: &Arc<FileTree>, rel_path: &str, source: &str) {
+        let abs_path = root.join(rel_path);
+        std::fs::create_dir_all(abs_path.parent().unwrap()).unwrap();
+        std::fs::write(&abs_path, source).unwrap();
+        let metadata = std::fs::metadata(&abs_path).unwrap();
+        let modified = metadata.modified().unwrap().into();
+        file_tree.insert(FileEntry::new(
+            rel_path.to_string(),
+            metadata.len(),
+            modified,
+        ));
+    }
+
+    fn fixture() -> (TempDir, Arc<FileTree>) {
+        let temp = TempDir::new().unwrap();
+        let file_tree = Arc::new(FileTree::new());
+        add_file(temp.path(), &file_tree, "src/lib.rs", "needle_exact\n");
+        add_file(
+            temp.path(),
+            &file_tree,
+            "tests/src/lib.rs",
+            "needle_tests\n",
+        );
+        add_file(temp.path(), &file_tree, "lib.rs", "needle_root\n");
+        add_file(temp.path(), &file_tree, "src/main.rs", "needle_main\n");
+        add_file(temp.path(), &file_tree, "docs/feature.md", "needle_docs\n");
+        (temp, file_tree)
+    }
+
+    #[test]
+    fn exact_file_match_only_searches_the_project_relative_path() {
+        let (temp, file_tree) = fixture();
+
+        let response = grep_with_scope(
+            temp.path(),
+            &file_tree,
+            "needle_",
+            10,
+            0,
+            GrepScope::All,
+            Some("src/lib.rs"),
+            Some(FileMatchMode::Exact),
+        )
+        .unwrap();
+
+        assert_eq!(response.total_matches, 1);
+        assert_eq!(response.matches[0].file, "src/lib.rs");
+    }
+
+    #[test]
+    fn suffix_file_match_searches_the_unique_matching_suffix() {
+        let (temp, file_tree) = fixture();
+
+        let response = grep_with_scope(
+            temp.path(),
+            &file_tree,
+            "needle_",
+            10,
+            0,
+            GrepScope::All,
+            Some("main.rs"),
+            Some(FileMatchMode::Suffix),
+        )
+        .unwrap();
+
+        assert_eq!(response.total_matches, 1);
+        assert_eq!(response.matches[0].file, "src/main.rs");
+    }
+
+    #[test]
+    fn contains_file_match_searches_the_unique_containing_path() {
+        let (temp, file_tree) = fixture();
+
+        let response = grep_with_scope(
+            temp.path(),
+            &file_tree,
+            "needle_",
+            10,
+            0,
+            GrepScope::All,
+            Some("feature"),
+            Some(FileMatchMode::Contains),
+        )
+        .unwrap();
+
+        assert_eq!(response.total_matches, 1);
+        assert_eq!(response.matches[0].file, "docs/feature.md");
+    }
+
+    #[test]
+    fn explicit_suffix_file_match_reports_ambiguous_paths() {
+        let (temp, file_tree) = fixture();
+
+        let err = grep_with_scope(
+            temp.path(),
+            &file_tree,
+            "needle_",
+            10,
+            0,
+            GrepScope::All,
+            Some("src/lib.rs"),
+            Some(FileMatchMode::Suffix),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("Ambiguous file filter"));
+        assert!(err.contains("src/lib.rs"));
+        assert!(err.contains("tests/src/lib.rs"));
+    }
+
+    #[test]
+    fn explicit_contains_file_match_reports_ambiguous_paths() {
+        let (temp, file_tree) = fixture();
+
+        let err = grep_with_scope(
+            temp.path(),
+            &file_tree,
+            "needle_",
+            10,
+            0,
+            GrepScope::All,
+            Some("lib.rs"),
+            Some(FileMatchMode::Contains),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("Ambiguous file filter"));
+        assert!(err.contains("lib.rs"));
+    }
+
+    #[test]
+    fn explicit_file_match_reports_no_matching_path() {
+        let (temp, file_tree) = fixture();
+
+        let err = grep_with_scope(
+            temp.path(),
+            &file_tree,
+            "needle_",
+            10,
+            0,
+            GrepScope::All,
+            Some("missing.rs"),
+            Some(FileMatchMode::Exact),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("No file matched"));
+    }
+
+    #[test]
+    fn default_file_filter_preserves_broad_compatibility_matching() {
+        let (temp, file_tree) = fixture();
+
+        let response = grep_with_scope(
+            temp.path(),
+            &file_tree,
+            "needle_",
+            10,
+            0,
+            GrepScope::All,
+            Some("lib.rs"),
+            None,
+        )
+        .unwrap();
+
+        let files: Vec<&str> = response
+            .matches
+            .iter()
+            .map(|grep_match| grep_match.file.as_str())
+            .collect();
+        assert_eq!(files, vec!["lib.rs", "src/lib.rs", "tests/src/lib.rs"]);
+    }
+
+    #[test]
+    fn file_match_rejects_unsupported_values() {
+        assert_eq!(FileMatchMode::from_str("glob"), None);
+    }
 }
 
 /// Compute byte ranges of comment and string nodes using tree-sitter.

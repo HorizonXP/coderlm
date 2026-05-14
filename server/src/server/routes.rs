@@ -690,6 +690,8 @@ struct GrepQuery {
     scope: Option<String>,
     /// Optional file path filter to restrict grep to matching files.
     file: Option<String>,
+    /// Optional file matching mode for `file`: "exact", "suffix", or "contains".
+    file_match: Option<String>,
 }
 
 async fn grep_handler(
@@ -712,6 +714,15 @@ async fn grep_handler(
     let file_tree = project.file_tree.clone();
     let pattern = params.pattern.clone();
     let file_filter = params.file.clone();
+    let file_match = match params.file_match.as_deref() {
+        Some(value) => Some(content::FileMatchMode::from_str(value).ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "Invalid file_match '{}'; expected exact, suffix, or contains",
+                value
+            ))
+        })?),
+        None => None,
+    };
 
     let result = tokio::task::spawn_blocking(move || {
         content::grep_with_scope(
@@ -722,6 +733,7 @@ async fn grep_handler(
             context_lines,
             scope,
             file_filter.as_deref(),
+            file_match,
         )
     })
     .await
