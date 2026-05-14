@@ -4,6 +4,12 @@ pub const SYMBOLS_QUERY: &str = r#"
 (function_item
   name: (identifier) @function.name) @function.def
 
+(mod_item
+  name: (identifier) @function.parent
+  body: (declaration_list
+    (function_item
+      name: (identifier) @function.name) @function.def))
+
 (impl_item
   type: (_) @impl.type
   body: (declaration_list
