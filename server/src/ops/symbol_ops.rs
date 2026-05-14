@@ -7,7 +7,7 @@ use tree_sitter::StreamingIterator;
 use crate::index::file_entry::Language;
 use crate::index::file_tree::FileTree;
 use crate::symbols::SymbolTable;
-use crate::symbols::queries;
+use crate::symbols::queries::{self, QueryKind};
 use crate::symbols::symbol::{Symbol, SymbolKind};
 
 pub fn list_symbols(
@@ -254,20 +254,21 @@ fn find_callers_ast(
         None => return find_callers_regex(source, rel_path, symbol_name, definition_file, limit),
     };
 
-    let query = match tree_sitter::Query::new(&config.language, config.callers_query) {
+    let query = match queries::get_cached_query(
+        language,
+        QueryKind::Callers,
+        &config.language,
+        config.callers_query,
+    ) {
         Ok(q) => q,
         Err(_) => return find_callers_regex(source, rel_path, symbol_name, definition_file, limit),
     };
 
-    let capture_names: Vec<String> = query
-        .capture_names()
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let capture_names = query.capture_names();
     let callee_idx = capture_names.iter().position(|n| n == "callee");
 
     let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let mut matches = cursor.matches(query.query(), tree.root_node(), source.as_bytes());
     let mut callers = Vec::new();
     let mut seen_call_sites = std::collections::HashSet::new();
     let elixir_modules = if language == Language::Elixir {
@@ -765,22 +766,23 @@ fn list_variables_ast(
         None => return list_variables_regex(&source[fn_start..fn_end], language, function_name),
     };
 
-    let query = match tree_sitter::Query::new(&config.language, config.variables_query) {
+    let query = match queries::get_cached_query(
+        language,
+        QueryKind::Variables,
+        &config.language,
+        config.variables_query,
+    ) {
         Ok(q) => q,
         Err(_) => return list_variables_regex(&source[fn_start..fn_end], language, function_name),
     };
 
-    let capture_names: Vec<String> = query
-        .capture_names()
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let capture_names = query.capture_names();
     let var_name_idx = capture_names.iter().position(|n| n == "var.name");
 
     let mut cursor = tree_sitter::QueryCursor::new();
     // Restrict matches to the function's byte range
     cursor.set_byte_range(fn_start..fn_end);
-    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let mut matches = cursor.matches(query.query(), tree.root_node(), source.as_bytes());
     let mut variables = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -1042,14 +1044,7 @@ struct ExUnitBlock {
     signature: String,
 }
 
-fn find_exunit_blocks(
-    source: &str,
-    tree: &tree_sitter::Tree,
-    language: &tree_sitter::Language,
-) -> Vec<ExUnitBlock> {
-    let query = match tree_sitter::Query::new(
-        language,
-        r#"
+const EXUNIT_BLOCKS_QUERY: &str = r#"
 (call
   target: (identifier) @test.kind
   (arguments
@@ -1059,23 +1054,30 @@ fn find_exunit_blocks(
       (sigil) @test.name
     ])
   (#any-of? @test.kind "test" "describe")) @test.def
-"#,
+"#;
+
+fn find_exunit_blocks(
+    source: &str,
+    tree: &tree_sitter::Tree,
+    language: &tree_sitter::Language,
+) -> Vec<ExUnitBlock> {
+    let query = match queries::get_cached_query(
+        Language::Elixir,
+        QueryKind::ElixirExUnitBlocks,
+        language,
+        EXUNIT_BLOCKS_QUERY,
     ) {
         Ok(q) => q,
         Err(_) => return Vec::new(),
     };
 
-    let capture_names: Vec<String> = query
-        .capture_names()
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let capture_names = query.capture_names();
     let kind_idx = capture_names.iter().position(|n| n == "test.kind");
     let name_idx = capture_names.iter().position(|n| n == "test.name");
     let def_idx = capture_names.iter().position(|n| n == "test.def");
 
     let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let mut matches = cursor.matches(query.query(), tree.root_node(), source.as_bytes());
     let mut blocks = Vec::new();
 
     while let Some(m) = matches.next() {
@@ -1141,21 +1143,22 @@ fn range_contains_elixir_call(
         return false;
     };
 
-    let query = match tree_sitter::Query::new(language, queries::elixir::CALLERS_QUERY) {
+    let query = match queries::get_cached_query(
+        Language::Elixir,
+        QueryKind::Callers,
+        language,
+        queries::elixir::CALLERS_QUERY,
+    ) {
         Ok(q) => q,
         Err(_) => return false,
     };
 
-    let capture_names: Vec<String> = query
-        .capture_names()
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let capture_names = query.capture_names();
     let callee_idx = capture_names.iter().position(|n| n == "callee");
 
     let mut cursor = tree_sitter::QueryCursor::new();
     cursor.set_byte_range(range);
-    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let mut matches = cursor.matches(query.query(), tree.root_node(), source.as_bytes());
 
     while let Some(m) = matches.next() {
         for cap in m.captures {
