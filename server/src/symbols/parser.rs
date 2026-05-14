@@ -8,7 +8,7 @@ use crate::index::call_site_cache::extract_call_site_facts;
 use crate::index::file_entry::Language;
 use crate::index::file_tree::FileTree;
 use crate::symbols::SymbolTable;
-use crate::symbols::queries;
+use crate::symbols::queries::{self, QueryKind};
 use crate::symbols::symbol::{Symbol, SymbolKind};
 
 /// Extract symbols from a single file.
@@ -36,15 +36,15 @@ pub fn extract_symbols_from_file(
         }
     };
 
-    let query = tree_sitter::Query::new(&config.language, config.symbols_query)?;
+    let query = queries::get_cached_query(
+        language,
+        QueryKind::Symbols,
+        &config.language,
+        config.symbols_query,
+    )?;
     let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
-
-    let capture_names: Vec<String> = query
-        .capture_names()
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut matches = cursor.matches(query.query(), tree.root_node(), source.as_bytes());
+    let capture_names = query.capture_names();
 
     let mut symbols = Vec::new();
     let mut current_impl_type: Option<String> = None;

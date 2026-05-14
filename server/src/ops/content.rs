@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::index::file_entry::{FileEntry, Language};
 use crate::index::file_tree::FileTree;
-use crate::symbols::queries;
+use crate::symbols::queries::{self, QueryKind};
 
 #[derive(Debug, Serialize)]
 pub struct PeekResponse {
@@ -579,13 +579,18 @@ fn compute_non_code_ranges(source: &str, language: Language) -> Vec<(usize, usiz
         _ => return Vec::new(),
     };
 
-    let query = match tree_sitter::Query::new(&config.language, query_str) {
+    let query = match queries::get_cached_query(
+        language,
+        QueryKind::NonCode,
+        &config.language,
+        query_str,
+    ) {
         Ok(q) => q,
         Err(_) => return Vec::new(),
     };
 
     let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let mut matches = cursor.matches(query.query(), tree.root_node(), source.as_bytes());
     let mut ranges = Vec::new();
 
     while let Some(m) = matches.next() {

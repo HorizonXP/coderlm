@@ -249,3 +249,24 @@ indexed for content grep but do not produce tree-sitter symbols.
   Success metric: single-file and burst-save baselines report event count,
   unique path count, reparse count, and latency without relying only on
   indirect `/api/v1/roots` polling.
+
+## Query Reuse Update
+
+Issue 27 adds a per-language/per-query-kind compiled query cache for symbol
+extraction, caller lookup, variable lookup, ExUnit test block lookup, and
+non-code range computation. The cache shares immutable `tree_sitter::Query`
+values only; parsers and query cursors remain per operation.
+
+Focused cache tests measure construction avoidance directly:
+
+| Scenario | Before | After |
+| --- | ---: | ---: |
+| Two Rust symbol query requests | 2 query constructions | 1 cached query |
+| Eight concurrent Rust caller query requests | Up to 8 query constructions | 1 cached query |
+| Rust + Python symbol query requests | 2 query constructions | 2 cached queries |
+
+Expected wall-clock impact is bounded because the baseline hot paths are still
+dominated by file scanning and parsing. The change removes repeated query
+compilation from cold extraction and first-fill caller/variable/non-code lookup;
+cached code-scope grep repeats remain dominated by the existing `FileTree`
+non-code range cache rather than query construction.
