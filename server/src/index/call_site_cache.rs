@@ -171,33 +171,66 @@ pub fn extract_call_site_facts(source: &str, language: Language) -> Option<Vec<C
     Some(facts)
 }
 
-fn call_site_receiver(
+pub(crate) fn call_site_receiver(
     source: &str,
     language: Language,
     callee_node: tree_sitter::Node,
 ) -> Option<String> {
-    if language == Language::Rust {
-        return rust_call_receiver(source, callee_node);
+    match language {
+        Language::Rust => rust_call_receiver(source, callee_node),
+        Language::Elixir => elixir_call_site_receiver(source, callee_node),
+        Language::Python => python_call_site_receiver(source, callee_node),
+        Language::TypeScript | Language::JavaScript => {
+            typescript_call_site_receiver(source, callee_node)
+        }
+        _ => None,
+    }
+}
+
+fn elixir_call_site_receiver(source: &str, callee_node: tree_sitter::Node) -> Option<String> {
+    let dot = callee_node.parent()?;
+    if dot.kind() != "dot" {
+        return None;
     }
 
-    let receiver = match language {
-        Language::Elixir => {
-            let dot = callee_node.parent()?;
-            if dot.kind() != "dot" {
-                return None;
-            }
-            dot.child_by_field_name("left")?
-        }
-        Language::Python => {
-            let attribute = callee_node.parent()?;
-            if attribute.kind() != "attribute" {
-                return None;
-            }
-            attribute.child_by_field_name("object")?
-        }
-        _ => return None,
-    };
+    let receiver = dot.child_by_field_name("left")?;
+    receiver
+        .utf8_text(source.as_bytes())
+        .ok()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
 
+fn python_call_site_receiver(source: &str, callee_node: tree_sitter::Node) -> Option<String> {
+    let attribute = callee_node.parent()?;
+    if attribute.kind() != "attribute" {
+        return None;
+    }
+
+    let receiver = attribute.child_by_field_name("object")?;
+    receiver
+        .utf8_text(source.as_bytes())
+        .ok()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn typescript_call_site_receiver(source: &str, callee_node: tree_sitter::Node) -> Option<String> {
+    let member = callee_node.parent()?;
+    if member.kind() != "member_expression" {
+        return None;
+    }
+
+    let property = member.child_by_field_name("property")?;
+    if property.start_byte() != callee_node.start_byte()
+        || property.end_byte() != callee_node.end_byte()
+    {
+        return None;
+    }
+
+    let receiver = member.child_by_field_name("object")?;
     receiver
         .utf8_text(source.as_bytes())
         .ok()

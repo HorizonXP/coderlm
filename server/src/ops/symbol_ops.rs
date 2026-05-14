@@ -7,7 +7,9 @@ use std::sync::Arc;
 use tree_sitter::StreamingIterator;
 
 use crate::config;
-use crate::index::call_site_cache::{CallSiteCacheLookup, CallSiteFact, CallSiteKind};
+use crate::index::call_site_cache::{
+    CallSiteCacheLookup, CallSiteFact, CallSiteKind, call_site_receiver,
+};
 use crate::index::file_entry::Language;
 use crate::index::file_tree::FileTree;
 use crate::symbols::SymbolTable;
@@ -482,7 +484,7 @@ fn call_site_context(
     callee_node: tree_sitter::Node,
 ) -> (Option<CallSiteKind>, Option<String>) {
     if language != Language::Rust {
-        return (None, None);
+        return (None, call_site_receiver(source, language, callee_node));
     }
 
     let Some(parent) = callee_node.parent() else {
@@ -518,18 +520,53 @@ fn call_site_matches_target(
     receiver: Option<&str>,
     target_symbol: &Symbol,
 ) -> bool {
-    if language != Language::Rust || target_symbol.language != Language::Rust {
-        return true;
+    if language == Language::Rust && target_symbol.language == Language::Rust {
+        return match call_kind {
+            Some(CallSiteKind::Bare) | None => target_symbol.kind != SymbolKind::Method,
+            Some(CallSiteKind::Method) => target_symbol.kind == SymbolKind::Method,
+            Some(CallSiteKind::Qualified) => {
+                rust_qualified_call_matches_target(receiver, target_symbol)
+            }
+            Some(CallSiteKind::Macro) => false,
+        };
     }
 
-    match call_kind {
-        Some(CallSiteKind::Bare) | None => target_symbol.kind != SymbolKind::Method,
-        Some(CallSiteKind::Method) => target_symbol.kind == SymbolKind::Method,
-        Some(CallSiteKind::Qualified) => {
-            rust_qualified_call_matches_target(receiver, target_symbol)
-        }
-        Some(CallSiteKind::Macro) => false,
+    if matches!(language, Language::TypeScript | Language::JavaScript)
+        && matches!(
+            target_symbol.language,
+            Language::TypeScript | Language::JavaScript
+        )
+    {
+        return ts_js_call_matches_target(receiver, target_symbol);
     }
+
+    true
+}
+
+fn ts_js_call_matches_target(receiver: Option<&str>, target_symbol: &Symbol) -> bool {
+    let is_member_call = receiver.is_some();
+    if ts_js_symbol_expects_member_call(target_symbol) {
+        is_member_call
+    } else {
+        !is_member_call
+    }
+}
+
+fn ts_js_symbol_expects_member_call(symbol: &Symbol) -> bool {
+    if !matches!(symbol.language, Language::TypeScript | Language::JavaScript) {
+        return false;
+    }
+
+    symbol.kind == SymbolKind::Method || ts_js_symbol_has_qualified_definition(&symbol.signature)
+}
+
+fn ts_js_symbol_has_qualified_definition(signature: &str) -> bool {
+    let signature = signature.trim();
+    let Some((left, _right)) = signature.split_once('=') else {
+        return false;
+    };
+
+    left.trim().contains('.')
 }
 
 fn rust_qualified_call_matches_target(receiver: Option<&str>, target_symbol: &Symbol) -> bool {
@@ -1475,12 +1512,25 @@ mod tests {
     const PY_CALLER_FILE: &str = "caller_precision.py";
     const PY_FREE_FILE: &str = "free_target.py";
     const PY_METHOD_FILE: &str = "method_target.py";
+    const TS_CALLERS_FILE: &str = "src/callers.ts";
+    const TS_FREE_FILE: &str = "src/free.ts";
+    const TS_METHOD_FILE: &str = "src/method.ts";
+    const JS_CALLERS_FILE: &str = "src/callers.js";
+    const JS_FREE_FILE: &str = "src/free.js";
+    const JS_METHOD_FILE: &str = "src/method.js";
 
     fn fixture_root() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures")
             .join("elixir")
+    }
+
+    fn language_fixture_root(language: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(language)
     }
 
     fn index_elixir_fixture() -> (std::path::PathBuf, Arc<FileTree>, Arc<SymbolTable>) {
@@ -1506,19 +1556,15 @@ mod tests {
         (root, file_tree, symbol_table)
     }
 
-    fn python_fixture_root() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("python")
-    }
-
-    fn index_python_fixture() -> (std::path::PathBuf, Arc<FileTree>, Arc<SymbolTable>) {
-        let root = python_fixture_root();
+    fn index_language_fixture(
+        language: &str,
+        rel_paths: &[&str],
+    ) -> (std::path::PathBuf, Arc<FileTree>, Arc<SymbolTable>) {
+        let root = language_fixture_root(language);
         let file_tree = Arc::new(FileTree::new());
         let symbol_table = Arc::new(SymbolTable::new());
 
-        for rel_path in [PY_CALLER_FILE, PY_FREE_FILE, PY_METHOD_FILE] {
+        for rel_path in rel_paths {
             let abs_path = root.join(rel_path);
             let size = std::fs::metadata(&abs_path).unwrap().len();
             let entry = FileEntry::new(rel_path.to_string(), size, Utc::now());
@@ -1534,6 +1580,17 @@ mod tests {
         }
 
         (root, file_tree, symbol_table)
+    }
+
+    fn caller_tuples(callers: &[CallerInfo]) -> Vec<(&str, usize, &str)> {
+        callers
+            .iter()
+            .map(|caller| (caller.file.as_str(), caller.line, caller.text.as_str()))
+            .collect()
+    }
+
+    fn index_python_fixture() -> (std::path::PathBuf, Arc<FileTree>, Arc<SymbolTable>) {
+        index_language_fixture("python", &[PY_CALLER_FILE, PY_FREE_FILE, PY_METHOD_FILE])
     }
 
     fn index_rust_fixture(files: &[(&str, &str)]) -> (TempDir, Arc<FileTree>, Arc<SymbolTable>) {
@@ -1673,6 +1730,135 @@ fn fresh() { target(); }
         assert_eq!(callers.len(), 1);
         assert_eq!(callers[0].line, 3);
         assert_eq!(callers[0].text, "fn fresh() { target(); }");
+    }
+
+    #[test]
+    fn typescript_and_javascript_caller_queries_expose_call_context_captures() {
+        let ts_config = queries::typescript::config();
+        let ts_query = tree_sitter::Query::new(&ts_config.language, ts_config.callers_query)
+            .expect("typescript callers query should compile");
+        assert!(ts_query.capture_names().contains(&"callee"));
+        assert!(ts_query.capture_names().contains(&"callee.unqualified"));
+        assert!(ts_query.capture_names().contains(&"callee.member"));
+
+        let js_config = queries::typescript::js_config();
+        let js_query = tree_sitter::Query::new(&js_config.language, js_config.callers_query)
+            .expect("javascript callers query should compile");
+        assert!(js_query.capture_names().contains(&"callee"));
+        assert!(js_query.capture_names().contains(&"callee.unqualified"));
+        assert!(js_query.capture_names().contains(&"callee.member"));
+    }
+
+    #[test]
+    fn typescript_fixture_keeps_free_function_callers_but_drops_member_false_positives() {
+        let fixture_files = [TS_CALLERS_FILE, TS_FREE_FILE, TS_METHOD_FILE];
+        let (root, file_tree, symbol_table) = index_language_fixture("typescript", &fixture_files);
+
+        let callers =
+            find_callers(&root, &file_tree, &symbol_table, "render", TS_FREE_FILE, 10).unwrap();
+
+        assert_eq!(
+            caller_tuples(&callers),
+            [(TS_CALLERS_FILE, 5, "const direct = render(\"direct\");")]
+        );
+
+        for rel_path in fixture_files {
+            store_cached_call_sites(&root, &file_tree, rel_path);
+        }
+
+        let cached_callers =
+            find_callers(&root, &file_tree, &symbol_table, "render", TS_FREE_FILE, 10).unwrap();
+
+        assert_eq!(cached_callers, callers);
+    }
+
+    #[test]
+    fn typescript_fixture_keeps_member_callers_but_drops_free_function_false_positives() {
+        let fixture_files = [TS_CALLERS_FILE, TS_FREE_FILE, TS_METHOD_FILE];
+        let (root, file_tree, symbol_table) = index_language_fixture("typescript", &fixture_files);
+
+        let callers = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "render",
+            TS_METHOD_FILE,
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(
+            caller_tuples(&callers),
+            [
+                (
+                    TS_CALLERS_FILE,
+                    6,
+                    "const method = renderer.render(\"method\");"
+                ),
+                (
+                    TS_CALLERS_FILE,
+                    7,
+                    "const unrelated = unknown.render(\"unrelated\");"
+                ),
+                (TS_METHOD_FILE, 7, "return this.render(value);"),
+            ]
+        );
+    }
+
+    #[test]
+    fn javascript_fixture_keeps_free_function_callers_but_drops_member_false_positives() {
+        let fixture_files = [JS_CALLERS_FILE, JS_FREE_FILE, JS_METHOD_FILE];
+        let (root, file_tree, symbol_table) = index_language_fixture("javascript", &fixture_files);
+
+        let callers =
+            find_callers(&root, &file_tree, &symbol_table, "render", JS_FREE_FILE, 10).unwrap();
+
+        assert_eq!(
+            caller_tuples(&callers),
+            [(JS_CALLERS_FILE, 5, "const direct = render(\"direct\");")]
+        );
+
+        for rel_path in fixture_files {
+            store_cached_call_sites(&root, &file_tree, rel_path);
+        }
+
+        let cached_callers =
+            find_callers(&root, &file_tree, &symbol_table, "render", JS_FREE_FILE, 10).unwrap();
+
+        assert_eq!(cached_callers, callers);
+    }
+
+    #[test]
+    fn javascript_fixture_keeps_member_callers_but_drops_free_function_false_positives() {
+        let fixture_files = [JS_CALLERS_FILE, JS_FREE_FILE, JS_METHOD_FILE];
+        let (root, file_tree, symbol_table) = index_language_fixture("javascript", &fixture_files);
+
+        let callers = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "render",
+            JS_METHOD_FILE,
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(
+            caller_tuples(&callers),
+            [
+                (
+                    JS_CALLERS_FILE,
+                    6,
+                    "const method = renderer.render(\"method\");"
+                ),
+                (
+                    JS_CALLERS_FILE,
+                    7,
+                    "const unrelated = unknown.render(\"unrelated\");"
+                ),
+                (JS_METHOD_FILE, 7, "return this.render(value);"),
+            ]
+        );
     }
 
     #[test]

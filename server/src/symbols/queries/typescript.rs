@@ -32,11 +32,11 @@ pub const SYMBOLS_QUERY: &str = r#"
 
 pub const CALLERS_QUERY: &str = r#"
 (call_expression
-  function: (identifier) @callee)
+  function: (identifier) @callee.unqualified @callee)
 
 (call_expression
   function: (member_expression
-    property: (property_identifier) @callee))
+    property: (property_identifier) @callee.member @callee))
 "#;
 
 pub const VARIABLES_QUERY: &str = r#"
@@ -129,11 +129,11 @@ pub const JS_SYMBOLS_QUERY: &str = r#"
 
 pub const JS_CALLERS_QUERY: &str = r#"
 (call_expression
-  function: (identifier) @callee)
+  function: (identifier) @callee.unqualified @callee)
 
 (call_expression
   function: (member_expression
-    property: (property_identifier) @callee))
+    property: (property_identifier) @callee.member @callee))
 "#;
 
 pub const JS_VARIABLES_QUERY: &str = r#"
