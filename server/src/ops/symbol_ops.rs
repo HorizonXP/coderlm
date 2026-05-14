@@ -7,7 +7,9 @@ use std::sync::Arc;
 use tree_sitter::StreamingIterator;
 
 use crate::config;
-use crate::index::call_site_cache::{CallSiteCacheLookup, CallSiteFact, call_site_receiver};
+use crate::index::call_site_cache::{
+    CallSiteCacheLookup, CallSiteFact, CallSiteKind, call_site_receiver,
+};
 use crate::index::file_entry::Language;
 use crate::index::file_tree::FileTree;
 use crate::symbols::SymbolTable;
@@ -305,7 +307,12 @@ fn find_callers_cached(
         if fact.callee != symbol_name {
             continue;
         }
-        if !call_site_matches_target_symbol(language, target_symbol, fact.receiver.as_deref()) {
+        if !call_site_matches_target(
+            language,
+            fact.call_kind,
+            fact.receiver.as_deref(),
+            target_symbol,
+        ) {
             continue;
         }
         if !seen_call_sites.insert(fact.start_byte) {
@@ -402,11 +409,12 @@ fn find_callers_ast(
             if Some(cap.index as usize) == callee_idx {
                 let text = cap.node.utf8_text(source.as_bytes()).unwrap_or("");
                 if text == symbol_name {
-                    let receiver = call_site_receiver(source, language, cap.node);
-                    if !call_site_matches_target_symbol(
+                    let (call_kind, receiver) = call_site_context(source, language, cap.node);
+                    if !call_site_matches_target(
                         language,
-                        target_symbol,
+                        call_kind,
                         receiver.as_deref(),
+                        target_symbol,
                     ) {
                         continue;
                     }
@@ -453,15 +461,72 @@ fn find_callers_ast(
     callers
 }
 
-fn call_site_matches_target_symbol(
+fn call_site_context(
+    source: &str,
     language: Language,
-    target_symbol: &Symbol,
-    receiver: Option<&str>,
-) -> bool {
-    if !matches!(language, Language::TypeScript | Language::JavaScript) {
-        return true;
+    callee_node: tree_sitter::Node,
+) -> (Option<CallSiteKind>, Option<String>) {
+    if language != Language::Rust {
+        return (None, call_site_receiver(source, language, callee_node));
     }
 
+    let Some(parent) = callee_node.parent() else {
+        return (None, None);
+    };
+
+    let kind = match parent.kind() {
+        "call_expression" => Some(CallSiteKind::Bare),
+        "field_expression" => Some(CallSiteKind::Method),
+        "scoped_identifier" => Some(CallSiteKind::Qualified),
+        "macro_invocation" => Some(CallSiteKind::Macro),
+        _ => None,
+    };
+
+    let receiver_node = match kind {
+        Some(CallSiteKind::Method) => parent.child_by_field_name("value"),
+        Some(CallSiteKind::Qualified) => parent.child_by_field_name("path"),
+        _ => None,
+    };
+
+    let receiver = receiver_node
+        .and_then(|node| node.utf8_text(source.as_bytes()).ok())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
+
+    (kind, receiver)
+}
+
+fn call_site_matches_target(
+    language: Language,
+    call_kind: Option<CallSiteKind>,
+    receiver: Option<&str>,
+    target_symbol: &Symbol,
+) -> bool {
+    if language == Language::Rust && target_symbol.language == Language::Rust {
+        return match call_kind {
+            Some(CallSiteKind::Bare) | None => target_symbol.kind != SymbolKind::Method,
+            Some(CallSiteKind::Method) => target_symbol.kind == SymbolKind::Method,
+            Some(CallSiteKind::Qualified) => {
+                rust_qualified_call_matches_target(receiver, target_symbol)
+            }
+            Some(CallSiteKind::Macro) => false,
+        };
+    }
+
+    if matches!(language, Language::TypeScript | Language::JavaScript)
+        && matches!(
+            target_symbol.language,
+            Language::TypeScript | Language::JavaScript
+        )
+    {
+        return ts_js_call_matches_target(receiver, target_symbol);
+    }
+
+    true
+}
+
+fn ts_js_call_matches_target(receiver: Option<&str>, target_symbol: &Symbol) -> bool {
     let is_member_call = receiver.is_some();
     if ts_js_symbol_expects_member_call(target_symbol) {
         is_member_call
@@ -485,6 +550,28 @@ fn ts_js_symbol_has_qualified_definition(signature: &str) -> bool {
     };
 
     left.trim().contains('.')
+}
+
+fn rust_qualified_call_matches_target(receiver: Option<&str>, target_symbol: &Symbol) -> bool {
+    let Some(receiver) = receiver else {
+        return false;
+    };
+    let receiver = receiver.trim();
+
+    if target_symbol.kind == SymbolKind::Method && receiver == "Self" {
+        return target_symbol.parent.is_some();
+    }
+
+    if let Some(parent) = target_symbol.parent.as_deref() {
+        return rust_path_terminal_matches(receiver, parent);
+    }
+
+    target_symbol.kind != SymbolKind::Method
+        && matches!(receiver, "crate" | "self" | "super" | "Self")
+}
+
+fn rust_path_terminal_matches(path: &str, expected: &str) -> bool {
+    path == expected || path.rsplit("::").next() == Some(expected)
 }
 
 fn elixir_enclosing_module(symbol_table: &Arc<SymbolTable>, symbol: &Symbol) -> Option<String> {
@@ -1373,7 +1460,9 @@ mod tests {
     use chrono::Utc;
     use tempfile::TempDir;
 
-    use crate::index::call_site_cache::extract_call_site_facts;
+    use crate::index::call_site_cache::{
+        CallSiteCacheLookup, CallSiteCacheMissReason, extract_call_site_facts,
+    };
     use crate::index::file_entry::FileEntry;
 
     const SAMPLE_FILE: &str = "lib/sample.ex";
@@ -1469,19 +1558,14 @@ mod tests {
             std::fs::write(&abs_path, source).unwrap();
             let size = std::fs::metadata(&abs_path).unwrap().len();
             file_tree.insert(FileEntry::new(rel_path.to_string(), size, Utc::now()));
-        }
 
-        symbol_table.insert(Symbol {
-            name: "target".to_string(),
-            kind: SymbolKind::Function,
-            file: "src/lib.rs".to_string(),
-            byte_range: (0, 16),
-            line_range: (1, 1),
-            language: Language::Rust,
-            signature: "fn target() {}".to_string(),
-            definition: None,
-            parent: None,
-        });
+            let language = file_tree.get(rel_path).unwrap().language;
+            for symbol in
+                crate::symbols::parser::extract_symbols_from_file(root, rel_path, language).unwrap()
+            {
+                symbol_table.insert(symbol);
+            }
+        }
 
         (temp_dir, file_tree, symbol_table)
     }
@@ -1572,7 +1656,7 @@ fn third() { target(); }
     }
 
     #[test]
-    fn caller_lookup_ignores_stale_cache_after_direct_metadata_mismatch() {
+    fn caller_lookup_reparses_after_direct_index_update_invalidates_cache() {
         let (temp_dir, file_tree, symbol_table) =
             index_rust_fixture(&[("src/lib.rs", "fn target() {}\nfn old() { target(); }\n")]);
         let root = temp_dir.path().to_path_buf();
@@ -1586,6 +1670,10 @@ fn fresh() { target(); }
         std::fs::write(root.join("src/lib.rs"), new_source).unwrap();
         let size = std::fs::metadata(root.join("src/lib.rs")).unwrap().len();
         file_tree.insert(FileEntry::new("src/lib.rs".to_string(), size, Utc::now()));
+        assert_eq!(
+            file_tree.call_site_cache_lookup("src/lib.rs", 1_000_000),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Absent)
+        );
 
         reset_caller_ast_parse_count();
         let callers =
@@ -1724,6 +1812,136 @@ fn fresh() { target(); }
                 (JS_METHOD_FILE, 7, "return this.render(value);"),
             ]
         );
+    }
+
+    #[test]
+    fn rust_caller_lookup_filters_method_qualified_and_macro_false_positives_for_free_functions() {
+        let (temp_dir, file_tree, symbol_table) = index_rust_fixture(&[
+            ("src/free.rs", "pub fn target() {}\n"),
+            (
+                "src/calls.rs",
+                "\
+struct Widget;
+
+impl Widget {
+    fn target(&self) {}
+}
+
+mod unrelated {
+    pub fn target() {}
+}
+
+fn call_all(value: Widget) {
+    target();
+    value.target();
+    unrelated::target();
+    target!();
+}
+",
+            ),
+        ]);
+        let root = temp_dir.path().to_path_buf();
+
+        let callers = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "target",
+            "src/free.rs",
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(
+            callers
+                .iter()
+                .map(|caller| (caller.file.as_str(), caller.line, caller.text.as_str()))
+                .collect::<Vec<_>>(),
+            [("src/calls.rs", 12, "target();")]
+        );
+
+        store_cached_call_sites(&root, &file_tree, "src/free.rs");
+        store_cached_call_sites(&root, &file_tree, "src/calls.rs");
+        let cached = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "target",
+            "src/free.rs",
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(cached, callers);
+    }
+
+    #[test]
+    fn rust_caller_lookup_keeps_ambiguous_methods_and_filters_unrelated_qualified_paths() {
+        let (temp_dir, file_tree, symbol_table) = index_rust_fixture(&[
+            (
+                "src/widget.rs",
+                "\
+pub struct Widget;
+
+impl Widget {
+    pub fn target(&self) {}
+}
+",
+            ),
+            (
+                "src/calls.rs",
+                "\
+struct Other;
+
+fn call_methods(widget: Widget, other: Other) {
+    widget.target();
+    other.target();
+    Widget::target(&widget);
+    Self::target();
+    Other::target(&other);
+    target();
+}
+",
+            ),
+        ]);
+        let root = temp_dir.path().to_path_buf();
+
+        let callers = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "target",
+            "src/widget.rs",
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(
+            callers
+                .iter()
+                .map(|caller| (caller.file.as_str(), caller.line, caller.text.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("src/calls.rs", 4, "widget.target();"),
+                ("src/calls.rs", 5, "other.target();"),
+                ("src/calls.rs", 6, "Widget::target(&widget);"),
+                ("src/calls.rs", 7, "Self::target();"),
+            ]
+        );
+
+        store_cached_call_sites(&root, &file_tree, "src/widget.rs");
+        store_cached_call_sites(&root, &file_tree, "src/calls.rs");
+        let cached = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "target",
+            "src/widget.rs",
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(cached, callers);
     }
 
     #[test]
