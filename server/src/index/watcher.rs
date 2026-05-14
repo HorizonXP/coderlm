@@ -251,12 +251,21 @@ impl WatcherEventStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::call_site_cache::{CallSiteCacheLookup, CallSiteCacheMissReason};
+    use crate::ops::symbol_ops::find_callers;
     use notify_debouncer_mini::DebouncedEvent;
     use std::fs;
     use tempfile::tempdir;
 
     fn event(path: &Path) -> DebouncedEvent {
         DebouncedEvent::new(path.to_path_buf(), DebouncedEventKind::Any)
+    }
+
+    fn cached_callees(file_tree: &FileTree, rel_path: &str) -> Vec<String> {
+        match file_tree.call_site_cache_lookup(rel_path, 1_000_000) {
+            CallSiteCacheLookup::Hit(facts) => facts.into_iter().map(|fact| fact.callee).collect(),
+            other => panic!("expected cached call sites for {rel_path}, got {other:?}"),
+        }
     }
 
     #[test]
@@ -308,6 +317,10 @@ mod tests {
         );
         assert_eq!(initial.reparsed_files, 1);
         assert!(symbol_table.get("src/main.rs", "stale").is_some());
+        assert_eq!(
+            cached_callees(&file_tree, "src/main.rs"),
+            Vec::<String>::new()
+        );
 
         fs::write(&file, "pub fn too_large() {}\n".repeat(20)).unwrap();
         let stats = handle_events(&root, &file_tree, &symbol_table, 10, vec![event(&file)]);
@@ -316,7 +329,76 @@ mod tests {
         assert_eq!(stats.reparsed_files, 0);
         assert_eq!(stats.removed_oversize_files, 1);
         assert!(file_tree.get("src/main.rs").is_none());
+        assert_eq!(
+            file_tree.call_site_cache_lookup("src/main.rs", 1_000_000),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Missing)
+        );
         assert_eq!(symbol_table.len(), 0);
+    }
+
+    #[test]
+    fn changed_file_refreshes_call_site_cache_and_drops_stale_callers() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let src = root.join("src");
+        fs::create_dir(&src).unwrap();
+        let file = src.join("main.rs");
+        fs::write(
+            &file,
+            "\
+fn target() {}
+fn old_call() { target(); }
+",
+        )
+        .unwrap();
+
+        let file_tree = Arc::new(FileTree::new());
+        let symbol_table = Arc::new(SymbolTable::new());
+
+        let initial = handle_events(
+            &root,
+            &file_tree,
+            &symbol_table,
+            1_000_000,
+            vec![event(&file)],
+        );
+        assert_eq!(initial.reparsed_files, 1);
+        assert_eq!(cached_callees(&file_tree, "src/main.rs"), vec!["target"]);
+
+        fs::write(
+            &file,
+            "\
+fn target() {}
+fn marker() { let _text = \"fn old_call() { target(); }\"; }
+fn fresh_call() { target(); }
+",
+        )
+        .unwrap();
+
+        let stats = handle_events(
+            &root,
+            &file_tree,
+            &symbol_table,
+            1_000_000,
+            vec![event(&file)],
+        );
+
+        assert_eq!(stats.changed_files, 1);
+        assert_eq!(stats.reparsed_files, 1);
+        assert_eq!(cached_callees(&file_tree, "src/main.rs"), vec!["target"]);
+
+        let callers = find_callers(
+            &root,
+            &file_tree,
+            &symbol_table,
+            "target",
+            "src/main.rs",
+            10,
+        )
+        .unwrap();
+        assert_eq!(callers.len(), 1);
+        assert_eq!(callers[0].line, 3);
+        assert_eq!(callers[0].text, "fn fresh_call() { target(); }");
     }
 
     #[test]
@@ -339,6 +421,10 @@ mod tests {
             vec![event(&rust_file)],
         );
         assert!(symbol_table.get("src/main.rs", "removed").is_some());
+        assert_eq!(
+            cached_callees(&file_tree, "src/main.rs"),
+            Vec::<String>::new()
+        );
 
         fs::remove_file(&rust_file).unwrap();
         fs::write(&text_file, "notes only\n").unwrap();
@@ -355,6 +441,10 @@ mod tests {
         assert_eq!(stats.changed_files, 1);
         assert_eq!(stats.reparsed_files, 0);
         assert!(file_tree.get("src/main.rs").is_none());
+        assert_eq!(
+            file_tree.call_site_cache_lookup("src/main.rs", 1_000_000),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Missing)
+        );
         assert!(file_tree.get("src/main.txt").is_some());
         assert_eq!(symbol_table.len(), 0);
     }

@@ -40,6 +40,7 @@ impl FileTree {
 
     pub fn insert(&self, entry: FileEntry) {
         self.non_code_ranges.remove(&entry.rel_path);
+        self.purge_call_sites(&entry.rel_path);
         self.files.insert(entry.rel_path.clone(), entry);
     }
 
@@ -348,7 +349,7 @@ mod tests {
         tree.insert(changed);
         assert_eq!(
             tree.call_site_cache_lookup("src/stale.rs", 100),
-            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Stale)
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Absent)
         );
 
         let oversized = entry("src/oversized.rs", 101, 1);
@@ -356,6 +357,34 @@ mod tests {
         assert_eq!(
             tree.call_site_cache_lookup("src/oversized.rs", 100),
             CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Oversized)
+        );
+    }
+
+    #[test]
+    fn insert_invalidates_call_site_cache_for_metadata_and_language_changes() {
+        let tree = FileTree::new();
+        let original = entry("src/lib.rs", 10, 1);
+        tree.insert(original.clone());
+        tree.store_call_sites(&original, vec![fact("stale")])
+            .unwrap();
+
+        let metadata_changed = entry("src/lib.rs", 10, 2);
+        tree.insert(metadata_changed);
+        assert_eq!(
+            tree.call_site_cache_lookup("src/lib.rs", 100),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Absent)
+        );
+
+        let python = entry("src/lib.py", 10, 1);
+        tree.insert(python.clone());
+        tree.store_call_sites(&python, vec![fact("python_stale")])
+            .unwrap();
+        let mut unsupported = entry("src/lib.py", 10, 2);
+        unsupported.language = Language::Markdown;
+        tree.insert(unsupported);
+        assert_eq!(
+            tree.call_site_cache_lookup("src/lib.py", 100),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Unsupported)
         );
     }
 }
