@@ -1,14 +1,15 @@
 # CodeRLM Profiling Baseline
 
-Date: 2026-05-12
-Baseline host: Linux workstation, release build, `/usr/bin/time -v`, `curl`, `jq`
-Repository: `/home/xpatel/Development/coderlm/.journey/worktrees/issue-11`
+Date: 2026-05-14
+Baseline host: Linux workstation `singularity`, release build, `/usr/bin/time -v`, `curl`, `jq`
+Repository: `/home/xpatel/Development/coderlm/.journey/worktrees/issue-23`
 
 This baseline is measurement-first. It records reproducible CPU, wall-time, and
-RSS commands plus current results for cold indexing, warm queries, watcher
-updates, and common API operations. It does not include performance fixes.
+RSS commands plus current results for cold indexing, warm session creation,
+repeated code-scope grep, caller lookup, watcher updates, and common API
+operations. It does not include performance fixes.
 
-## Prerequisites
+## Environment
 
 Build the optimized server once before measuring:
 
@@ -17,50 +18,75 @@ cd server
 cargo build --release
 ```
 
-Optional tools:
+Environment captured for this run:
 
-- `/usr/bin/time -v`: captures CPU percentage and peak RSS.
-- `hyperfine`: optional replacement for repeated wall-time samples.
-- `perf`: optional CPU hotspot sampling on Linux.
-- `cargo flamegraph`: optional flamegraph wrapper when installed.
+| Item | Value |
+| --- | --- |
+| Host OS | Linux `singularity` 6.17.0-23-generic x86_64 |
+| Rust | `rustc 1.94.1 (e408947bf 2026-03-25)` |
+| Cargo | `cargo 1.94.1 (29ea6fb6a 2026-03-24)` |
+| Server binary | `server/target/release/coderlm-server` |
+| Timed root | `/home/xpatel/Development/coderlm/.journey/worktrees/issue-23` |
+| `/usr/bin/time -v` | available |
+| `jq` | `jq-1.8.1` |
+| `perf` | `/usr/bin/perf` |
+| `hyperfine` | not installed |
+| `cargo flamegraph` | not installed |
 
-Tools available in this baseline run:
+Notes:
 
-- `/usr/bin/time -v`: available.
-- `perf`: available.
-- `hyperfine`: not installed.
-- `cargo flamegraph`: not installed.
+- The timed root is the Journey worktree for this issue. Runtime directories
+  such as `.journey`, `.git`, and `server/target` are skipped by the server's
+  ignore rules.
+- Endpoint names and query parameters were checked against
+  `server/src/server/routes.rs` before recording commands.
 
 ## Cold Indexing
 
 Command:
 
 ```bash
-PORT=31312
+cd server
+PORT=31323
 ROOT="$(pwd)/.."
 /usr/bin/time -v timeout --signal=INT 2s \
   ./target/release/coderlm-server serve --port "$PORT" "$ROOT"
+```
+
+Additional live polling command pattern used for wall-time milestones:
+
+```bash
+START_MS=$(date +%s%3N)
+./target/release/coderlm-server serve --port 31324 "$ROOT" &
+PID=$!
+until curl -fsS "http://127.0.0.1:31324/api/v1/health" >/dev/null; do
+  sleep 0.02
+done
+curl -fsS "http://127.0.0.1:31324/api/v1/roots" | jq .
 ```
 
 Captured result:
 
 | Metric | Value |
 | --- | ---: |
-| Indexed files | 55 |
-| Extracted symbols | 433 |
-| Wall time until first populated symbol table | 43 ms |
-| Session creation against pre-indexed project | 15 ms |
+| Indexed files | 60 |
+| Extracted symbols | 515 |
+| Health endpoint available | 55 ms |
+| First populated symbol table visible via `/api/v1/roots` | 86 ms |
+| Full symbol table visible via `/api/v1/roots` | 575 ms |
+| Server log: synchronous directory scan | 2.831 ms |
+| Server log: full symbol extraction | 515 ms |
 | Timed process wall time | 2.01 s |
-| User CPU | 0.75 s |
-| System CPU | 0.04 s |
-| CPU utilization during timed window | 39% |
-| Peak RSS | 17,560 KB |
+| User CPU | 1.29 s |
+| System CPU | 0.07 s |
+| CPU utilization during timed window | 67% |
+| Peak RSS | 26,204 KB |
 
 Notes:
 
-- The server pre-indexes files synchronously and spawns symbol extraction in the
-  background. The HTTP listener is available before extraction completes.
-- The 2 second timed window includes idle server time after indexing so CPU
+- The server pre-indexes files synchronously and starts the HTTP listener before
+  background symbol extraction is fully complete.
+- The 2 second timed window includes idle server time after indexing, so CPU
   percentage is lower than the burst CPU used during extraction.
 
 ## Warm Session Creation
@@ -68,13 +94,13 @@ Notes:
 Command:
 
 ```bash
-ROOT=/path/to/coderlm
+ROOT=/home/xpatel/Development/coderlm/.journey/worktrees/issue-23
 SID=$(
-  curl -fsS -X POST "http://127.0.0.1:31313/api/v1/sessions" \
+  curl -fsS -X POST "http://127.0.0.1:31324/api/v1/sessions" \
     -H 'Content-Type: application/json' \
     -d "{\"cwd\":\"$ROOT\"}" | jq -r .session_id
 )
-curl -fsS "http://127.0.0.1:31313/api/v1/roots" |
+curl -fsS "http://127.0.0.1:31324/api/v1/roots" |
   jq --arg root "$ROOT" '.roots[] | select(.path==$root)'
 ```
 
@@ -82,12 +108,12 @@ Captured result:
 
 | Metric | Value |
 | --- | ---: |
-| Session creation latency | 15 ms |
-| File count after warm session | 55 |
-| Symbol count after warm session | 429-433 |
+| Session creation latency | 4.385 ms |
+| File count after warm session | 60 |
+| Symbol count after warm session | 515 |
+| Server RSS after warm session | 22,936 KB |
 | Observed extraction repeat | No full rescan; reused existing project |
 
-The small symbol-count variation came from watcher activity while profiling.
 The warm-session path returned the already indexed project rather than running
 `walker::scan_directory` again.
 
@@ -98,22 +124,22 @@ Command pattern:
 ```bash
 curl -fsS -w '\n%{time_total}' \
   -H "X-Session-Id: $SID" \
-  "http://127.0.0.1:31313/api/v1/<endpoint>"
+  "http://127.0.0.1:31324/api/v1/<endpoint>"
 ```
 
 Captured result:
 
-| Operation | Endpoint | Wall time |
-| --- | --- | ---: |
-| Symbols | `/api/v1/symbols?limit=500` | 4.014 ms |
-| Search | `/api/v1/symbols/search?q=extract_symbols&limit=20` | 1.535 ms |
-| Implementation | `/api/v1/symbols/implementation?symbol=extract_symbols_from_file&file=server/src/symbols/parser.rs` | 0.896 ms |
-| Callers, common symbol | `/api/v1/symbols/callers?symbol=insert&file=server/src/symbols/mod.rs&limit=50` | 159.873 ms |
-| Callers, rare symbol | `/api/v1/symbols/callers?symbol=WatcherHandle&file=server/src/index/watcher.rs&limit=50` | 44.275 ms |
-| Grep, all scope | `/api/v1/grep?pattern=extract_symbols&max_matches=100&scope=all` | 2.800 ms |
-| Grep, code scope | `/api/v1/grep?pattern=extract_symbols&max_matches=100&scope=code` | 169.343 ms |
-| Structure | `/api/v1/structure?depth=3` | 0.957 ms |
-| Server RSS after warm queries | `ps -o rss= -p "$PID"` | 27,776 KB |
+| Operation | Endpoint | Wall time | Count |
+| --- | --- | ---: | ---: |
+| Symbols | `/api/v1/symbols?limit=500` | 5.443 ms | 495 |
+| Search | `/api/v1/symbols/search?q=extract_symbols&limit=20` | 1.135 ms | 1 |
+| Implementation | `/api/v1/symbols/implementation?symbol=extract_symbols_from_file&file=server/src/symbols/parser.rs` | 1.079 ms | n/a |
+| Callers, common symbol | `/api/v1/symbols/callers?symbol=insert&file=server/src/symbols/mod.rs&limit=50` | 208.974 ms | 29 |
+| Callers, rare symbol | `/api/v1/symbols/callers?symbol=WatcherHandle&file=server/src/index/watcher.rs&limit=50` | 31.768 ms | 1 |
+| Grep, all scope | `/api/v1/grep?pattern=extract_symbols&max_matches=100&scope=all` | 3.224 ms | 11 |
+| Grep, code scope first fill | `/api/v1/grep?pattern=extract_symbols&max_matches=100&scope=code` | 232.047 ms | 11 |
+| Structure | `/api/v1/structure?depth=3` | 0.892 ms | n/a |
+| Server RSS after warm queries | `ps -o rss= -p "$PID"` | 32,692 KB | n/a |
 
 ## Repeated Code-Scope Grep
 
@@ -122,32 +148,35 @@ Command:
 ```bash
 for n in 1 2 3 4 5; do
   curl -fsS -o /tmp/coderlm-grep-code-$n.json \
-    -w "code_grep_run_$n time_s=%{time_total}\n" \
+    -w "code_grep_cached_run_$n time_s=%{time_total}\n" \
     -H "X-Session-Id: $SID" \
-    "http://127.0.0.1:31313/api/v1/grep?pattern=extract_symbols&max_matches=100&scope=code"
+    "http://127.0.0.1:31324/api/v1/grep?pattern=extract_symbols&max_matches=100&scope=code"
 done
 ```
 
-Captured result:
+Captured result after the first fill above:
 
-| Run | Wall time |
-| --- | ---: |
-| 1 | 177.710 ms |
-| 2 | 197.475 ms |
-| 3 | 184.121 ms |
-| 4 | 177.656 ms |
-| 5 | 171.530 ms |
+| Run | Wall time | Matches |
+| --- | ---: | ---: |
+| 1 | 3.087 ms | 11 |
+| 2 | 2.844 ms | 11 |
+| 3 | 2.873 ms | 11 |
+| 4 | 3.032 ms | 11 |
+| 5 | 2.775 ms | 11 |
+| Average | 2.922 ms | 11 |
 
-Observation: repeated identical code-scope grep remained close to the original
-latency. This suggests comment/string exclusion ranges are recomputed for each
-request rather than cached.
+Observation: repeated identical code-scope grep now reuses cached non-code byte
+ranges stored on `FileTree`. The first code-scope request still pays the
+tree-sitter range fill cost, but later requests are close to all-scope grep
+latency. The cache is keyed by file metadata and language and is invalidated
+when files are inserted, updated, or removed.
 
 ## Watcher Updates
 
 Command outline:
 
 ```bash
-TMPROOT=$(mktemp -d /tmp/coderlm-watch.XXXXXX)
+TMPROOT=$(mktemp -d /tmp/coderlm-watch23.XXXXXX)
 mkdir -p "$TMPROOT/src" "$TMPROOT/target/huge" "$TMPROOT/docs"
 printf 'pub fn baseline() -> usize { 1 }\nfn main() { let _ = baseline(); }\n' \
   > "$TMPROOT/src/main.rs"
@@ -157,7 +186,7 @@ open(sys.argv[1], "w").write("pub fn ignored_generated() {}\n" * 5000)
 open(sys.argv[2], "w").write("unsupported notes\n" * 1000)
 PY
 
-curl -fsS -X POST "http://127.0.0.1:31313/api/v1/sessions" \
+curl -fsS -X POST "http://127.0.0.1:31324/api/v1/sessions" \
   -H 'Content-Type: application/json' \
   -d "{\"cwd\":\"$TMPROOT\"}"
 
@@ -176,47 +205,47 @@ Captured result:
 | --- | ---: |
 | Initial temp-project files | 2 |
 | Initial temp-project symbols | 2 |
-| Single supported-file edit visible in `/roots` | 523 ms |
-| Burst save of 5 supported files visible in `/roots` | 589 ms |
+| Single supported-file edit visible in `/api/v1/roots` | 554 ms |
+| Burst save of 5 supported files visible in `/api/v1/roots` | 575 ms |
 | Final temp-project files | 7 |
 | Final temp-project symbols | 8 |
 | Large ignored `target/` matches | 0 |
 | Unsupported `.txt` grep matches | 1000 |
 
-Observation: watcher latency matches the 500 ms debouncer in
-`server/src/index/watcher.rs`. Files under ignored directories are skipped.
-Unsupported files are indexed for content grep but do not produce tree-sitter
-symbols.
+Observation: watcher latency is dominated by the 500 ms debounce in
+`server/src/index/watcher.rs`. Events are coalesced by relative path before
+re-indexing. Files under ignored directories are skipped. Unsupported files are
+indexed for content grep but do not produce tree-sitter symbols.
 
 ## Top Suspects
 
-1. Code-scope grep CPU: `server/src/ops/content.rs` recomputes tree-sitter
-   comment/string ranges for each supported file on every `scope=code` request.
-   Target: repeated identical code-scope grep should drop from roughly
-   170-200 ms to less than 30 ms on this repo after caching or reusing ranges.
-2. Caller lookup CPU: `server/src/ops/symbol_ops.rs` scans indexed files and
-   reparses AST-supported files that contain the symbol text. Target: common
-   caller query should drop from roughly 160 ms to less than 50 ms on this repo
-   by indexing call sites or caching parsed caller data.
-3. Symbol extraction memory/CPU: `server/src/symbols/parser.rs` creates a new
-   parser and query per file during cold extraction. Target: keep cold-index RSS
-   under 20 MB on this repo while reducing extraction CPU by at least 25%.
-4. Watcher reparse churn: `server/src/index/watcher.rs` reparses every changed
-   supported file after debounce. Target: preserve the roughly 500-600 ms
-   visible update latency while coalescing duplicate burst events so a file is
-   reparsed at most once per debounce window.
+1. Caller lookup CPU: `server/src/ops/symbol_ops.rs` scans indexed files and
+   parses AST-supported files that contain the symbol text. The common `insert`
+   caller query is the slowest warm query at about 209 ms, while the rare
+   `WatcherHandle` caller query is about 32 ms.
+2. Code-scope grep first-fill CPU: `server/src/ops/content.rs` still needs to
+   compute non-code ranges on the first `scope=code` request for each supported
+   file. Repeated requests are fast after `FileTree` cache population.
+3. Symbol extraction CPU: `server/src/symbols/parser.rs` creates parsers and
+   queries during cold extraction. Full extraction took about 515-575 ms and
+   peak RSS during the 2 second timed window was 26,204 KB.
+4. Watcher observability: `server/src/index/watcher.rs` coalesces events and
+   reparses each changed supported file after debounce, but the public baseline
+   still infers event and reparse counts indirectly from `/api/v1/roots`.
 
 ## Follow-Up Optimization Targets
 
-- Cache non-code byte ranges per file and invalidate them from watcher updates.
-  Success metric: five repeated `grep --scope code` runs average less than
-  30 ms on this repository.
 - Add a call-site index or per-file caller cache keyed by file mtime/content.
   Success metric: `callers insert` averages less than 50 ms and rare-symbol
   callers average less than 20 ms on this repository.
+- Reduce first-fill code-scope grep cost without regressing the cached path.
+  Success metric: first `grep --scope code` for `extract_symbols` drops from
+  roughly 232 ms to less than 50 ms, while five cached repeats stay under 5 ms
+  on average.
 - Reuse or precompile language query objects where tree-sitter allows it.
   Success metric: cold extraction CPU drops by at least 25% with peak RSS not
-  exceeding the 17,560 KB baseline by more than 10%.
+  exceeding the 26,204 KB baseline by more than 10%.
 - Add debug or metrics counters for watcher events and reparses.
   Success metric: single-file and burst-save baselines report event count,
-  reparse count, and latency without relying on indirect `/roots` polling.
+  unique path count, reparse count, and latency without relying only on
+  indirect `/api/v1/roots` polling.
