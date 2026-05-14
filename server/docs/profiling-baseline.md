@@ -270,3 +270,57 @@ dominated by file scanning and parsing. The change removes repeated query
 compilation from cold extraction and first-fill caller/variable/non-code lookup;
 cached code-scope grep repeats remain dominated by the existing `FileTree`
 non-code range cache rather than query construction.
+
+## Issue 36 Integrated Validation Update
+
+Date: 2026-05-14
+Repository: `/home/xpatel/Development/coderlm/.journey/worktrees/issue-36`
+Binary: `server/target/release/coderlm-server`
+
+This update validates the integrated caller cache and query reuse behavior after
+the dependent implementation steps landed. The server was rebuilt with
+`cargo build --release`, started against the Issue 36 worktree, and queried
+through the HTTP API after `/api/v1/roots` reported `ready: true`.
+
+Current indexed project state:
+
+| Metric | Value |
+| --- | ---: |
+| Indexed files | 70 |
+| Extracted symbols | 657 |
+| Caller cache entries before caller probes | 51 |
+| Caller cache hits before caller probes | 0 |
+| Caller cache entries after caller probes | 51 |
+| Caller cache hits after caller probes | 327 |
+| Caller cache misses after caller probes | 6 |
+
+Caller lookup comparison against the original pre-cache baseline:
+
+| Operation | Before | Current validation |
+| --- | ---: | ---: |
+| `insert` caller lookup, first measured request | 208.974 ms | 89.414 ms |
+| `insert` caller lookup, repeated hot average | 208.974 ms baseline single warm request | 6.351 ms over runs 2-5 |
+| `insert` caller lookup result count | 29 at `limit=50` | 50 at `limit=50` |
+
+Current `insert` caller probe timings:
+
+| Run | Wall time | Results |
+| --- | ---: | ---: |
+| 1 | 89.414 ms | 50 |
+| 2 | 9.992 ms | 50 |
+| 3 | 5.218 ms | 50 |
+| 4 | 5.249 ms | 50 |
+| 5 | 4.943 ms | 50 |
+
+The first request can still pay caller cache fill and validation costs. Repeated
+unchanged lookups reuse fresh per-file call-site cache entries and stay under
+10 ms on this worktree, while preserving the requested limit.
+
+Query reuse remains a construction-avoidance optimization rather than a large
+standalone wall-clock win. The focused query cache tests continue to provide the
+before/after proof: two repeated Rust symbol queries construct 2 queries before
+reuse and 1 cached query after reuse; eight concurrent Rust caller query
+requests construct up to 8 queries before reuse and 1 cached query after reuse;
+Rust plus Python symbol queries remain separated as 2 cached queries. The
+measured caller hot path above is still dominated by indexed file traversal and
+cache freshness checks after query construction is removed.
