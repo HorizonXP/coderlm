@@ -162,6 +162,7 @@ async fn list_roots(State(state): State<AppState>) -> Json<Value> {
                 "last_indexed_at": status.last_indexed_at.to_rfc3339(),
                 "watcher_enabled": status.watcher_enabled,
                 "watcher_state": status.watcher_state,
+                "caller_cache_stats": status.caller_cache_stats,
             })
         })
         .collect();

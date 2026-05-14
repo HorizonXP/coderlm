@@ -501,18 +501,48 @@ curl -s localhost:3000/api/v1/roots
       "file_count": 142,
       "symbol_count": 1038,
       "last_active": "2026-02-07T19:05:00Z",
-      "session_count": 1
+      "session_count": 1,
+      "readiness": "ready",
+      "ready": true,
+      "extraction_complete": true,
+      "last_indexed_at": "2026-02-07T19:04:58Z",
+      "watcher_enabled": true,
+      "watcher_state": "enabled",
+      "caller_cache_stats": {
+        "entry_count": 12,
+        "hit_count": 34,
+        "miss_count": 5,
+        "invalidation_count": 2
+      }
     },
     {
       "path": "/home/user/frontend",
       "file_count": 87,
       "symbol_count": 512,
       "last_active": "2026-02-07T19:03:22Z",
-      "session_count": 2
+      "session_count": 2,
+      "readiness": "indexing",
+      "ready": false,
+      "extraction_complete": false,
+      "last_indexed_at": "2026-02-07T19:03:20Z",
+      "watcher_enabled": true,
+      "watcher_state": "enabled",
+      "caller_cache_stats": {
+        "entry_count": 0,
+        "hit_count": 0,
+        "miss_count": 0,
+        "invalidation_count": 0
+      }
     }
   ]
 }
 ```
+
+`caller_cache_stats` is a read-only snapshot. It exposes only cheap counters:
+cached entry count, caller-cache hits, caller-cache misses, and actual cache
+entry invalidations. Misses include absent, stale, oversized, missing, and
+unsupported files; separate per-reason counters are not exposed because they
+would add tracking complexity beyond the status surface.
 
 ---
 
