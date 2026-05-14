@@ -153,6 +153,44 @@ caller-cache statistics are a read-only snapshot with entry, hit, miss, and
 invalidation counts; misses include unsupported files rather than exposing
 separate per-reason counters.
 
+Example response:
+
+```json
+{
+  "count": 1,
+  "roots": [
+    {
+      "path": "/home/user/backend",
+      "file_count": 142,
+      "symbol_count": 1038,
+      "last_active": "2026-02-07T19:05:00Z",
+      "session_count": 1,
+      "readiness": "ready",
+      "ready": true,
+      "extraction_complete": true,
+      "last_indexed_at": "2026-02-07T19:04:58Z",
+      "watcher_enabled": true,
+      "watcher_state": "enabled",
+      "caller_cache_stats": {
+        "entry_count": 12,
+        "hit_count": 34,
+        "miss_count": 5,
+        "invalidation_count": 2
+      }
+    }
+  ]
+}
+```
+
+`readiness` is `"indexing"` until initial background symbol extraction finishes,
+then `"ready"`; `ready` mirrors that state as a boolean and
+`extraction_complete` reports the same initial extraction completion flag.
+During `"indexing"`, file-tree operations can already return the cold-scan file
+index, but symbol-dependent endpoints may return partial results. Clients that
+need complete symbol, caller, test, or variable results should poll `/roots`
+until the matching root reports `"readiness": "ready"`. `last_indexed_at`
+updates after initial extraction completes and after watcher-driven re-indexes.
+
 List all active sessions:
 
 ```bash
@@ -171,6 +209,24 @@ curl localhost:3000/api/v1/history
 - **Annotations are per-project.** File definitions, symbol definitions, and marks set by one session are visible to all sessions on the same project. This lets a swarm of agents build shared understanding.
 - **Filesystem watcher is automatic.** When you edit files in a project, the server detects changes within ~500ms and re-indexes. No restart needed.
 - **Annotations can be persisted.** Use `save-annotations` to write definitions and marks to `.coderlm/annotations.json` in the project root. Annotations are auto-loaded when a new session is created for that project. The `Stop` hook also auto-saves annotations before cleanup.
+
+## File path filtering
+
+All file paths accepted by data endpoints are project-relative indexed paths,
+not absolute paths. `GET /peek` and `GET /chunk_indices` require an exact
+`file` value such as `src/main.rs`.
+
+`GET /grep` accepts `file` plus an optional `file_match` mode:
+
+- `file_match=exact` searches only the indexed path equal to `file`.
+- `file_match=suffix` searches the one indexed path that ends with `file`.
+- `file_match=contains` searches the one indexed path that contains `file`.
+
+When `file_match` is set, the filter must resolve to exactly one indexed file.
+Zero matches return a no-match error, and multiple matches return an ambiguity
+error listing the matched paths. When `file_match` is omitted, grep preserves
+legacy compatibility behavior and searches any indexed path where `file` is an
+exact, contains, or suffix match, which can intentionally cover multiple files.
 
 ## Indexing and watcher tuning
 
