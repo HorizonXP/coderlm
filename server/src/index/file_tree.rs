@@ -1,6 +1,7 @@
 use dashmap::DashMap;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::call_site_cache::{
     CachedCallSites, CallSiteCacheFreshness, CallSiteCacheLookup, CallSiteCacheMissReason,
@@ -13,6 +14,9 @@ pub struct FileTree {
     pub files: DashMap<String, FileEntry>,
     non_code_ranges: DashMap<String, CachedNonCodeRanges>,
     call_site_cache: DashMap<String, CachedCallSites>,
+    call_site_cache_hits: AtomicU64,
+    call_site_cache_misses: AtomicU64,
+    call_site_cache_invalidations: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -29,12 +33,23 @@ pub struct LanguageBreakdown {
     pub count: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct CallSiteCacheStats {
+    pub entry_count: usize,
+    pub hit_count: u64,
+    pub miss_count: u64,
+    pub invalidation_count: u64,
+}
+
 impl FileTree {
     pub fn new() -> Self {
         Self {
             files: DashMap::new(),
             non_code_ranges: DashMap::new(),
             call_site_cache: DashMap::new(),
+            call_site_cache_hits: AtomicU64::new(0),
+            call_site_cache_misses: AtomicU64::new(0),
+            call_site_cache_invalidations: AtomicU64::new(0),
         }
     }
 
@@ -124,6 +139,15 @@ impl FileTree {
         Ok(())
     }
 
+    pub fn call_site_cache_stats(&self) -> CallSiteCacheStats {
+        CallSiteCacheStats {
+            entry_count: self.call_site_cache.len(),
+            hit_count: self.call_site_cache_hits.load(Ordering::Relaxed),
+            miss_count: self.call_site_cache_misses.load(Ordering::Relaxed),
+            invalidation_count: self.call_site_cache_invalidations.load(Ordering::Relaxed),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn call_site_cache_lookup(
         &self,
@@ -131,29 +155,46 @@ impl FileTree {
         max_file_size: u64,
     ) -> CallSiteCacheLookup {
         let Some(entry) = self.get(rel_path) else {
+            self.record_call_site_cache_miss();
             return CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Missing);
         };
 
         if entry.size > max_file_size {
+            self.record_call_site_cache_miss();
             return CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Oversized);
         }
 
         if !entry.language.has_tree_sitter_support() {
+            self.record_call_site_cache_miss();
             return CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Unsupported);
         }
 
         let Some(cached) = self.call_site_cache.get(rel_path) else {
+            self.record_call_site_cache_miss();
             return CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Absent);
         };
 
         match cached.freshness_against(&entry, max_file_size) {
-            CallSiteCacheFreshness::Fresh => CallSiteCacheLookup::Hit(cached.facts.clone()),
-            CallSiteCacheFreshness::Miss(reason) => CallSiteCacheLookup::Miss(reason),
+            CallSiteCacheFreshness::Fresh => {
+                self.call_site_cache_hits.fetch_add(1, Ordering::Relaxed);
+                CallSiteCacheLookup::Hit(cached.facts.clone())
+            }
+            CallSiteCacheFreshness::Miss(reason) => {
+                self.record_call_site_cache_miss();
+                CallSiteCacheLookup::Miss(reason)
+            }
         }
     }
 
     pub fn purge_call_sites(&self, rel_path: &str) {
-        self.call_site_cache.remove(rel_path);
+        if self.call_site_cache.remove(rel_path).is_some() {
+            self.call_site_cache_invalidations
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_call_site_cache_miss(&self) {
+        self.call_site_cache_misses.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Render a tree-like structure string, similar to the `tree` command.
@@ -358,6 +399,64 @@ mod tests {
             tree.call_site_cache_lookup("src/oversized.rs", 100),
             CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Oversized)
         );
+    }
+
+    #[test]
+    fn call_site_cache_stats_track_entries_hits_misses_and_invalidations() {
+        let tree = FileTree::new();
+        assert_eq!(
+            tree.call_site_cache_stats(),
+            CallSiteCacheStats {
+                entry_count: 0,
+                hit_count: 0,
+                miss_count: 0,
+                invalidation_count: 0,
+            }
+        );
+
+        assert_eq!(
+            tree.call_site_cache_lookup("src/missing.rs", 100),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Missing)
+        );
+        assert_eq!(tree.call_site_cache_stats().miss_count, 1);
+
+        let unsupported = entry("docs/readme.md", 10, 1);
+        tree.insert(unsupported);
+        assert_eq!(
+            tree.call_site_cache_lookup("docs/readme.md", 100),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Unsupported)
+        );
+        assert_eq!(tree.call_site_cache_stats().miss_count, 2);
+
+        let original = entry("src/lib.rs", 10, 1);
+        tree.insert(original.clone());
+        tree.store_call_sites(&original, vec![fact("cached")])
+            .unwrap();
+        assert_eq!(tree.call_site_cache_stats().entry_count, 1);
+
+        let before_status_reads = tree.call_site_cache_stats();
+        assert_eq!(tree.call_site_cache_stats(), before_status_reads);
+        assert_eq!(tree.call_site_cache_stats(), before_status_reads);
+
+        assert_eq!(
+            tree.call_site_cache_lookup("src/lib.rs", 100),
+            CallSiteCacheLookup::Hit(vec![fact("cached")])
+        );
+        assert_eq!(tree.call_site_cache_stats().hit_count, 1);
+
+        let changed = entry("src/lib.rs", 11, 2);
+        tree.insert(changed);
+        let stats = tree.call_site_cache_stats();
+        assert_eq!(stats.entry_count, 0);
+        assert_eq!(stats.invalidation_count, 1);
+
+        assert_eq!(
+            tree.call_site_cache_lookup("src/lib.rs", 100),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Absent)
+        );
+        let stats = tree.call_site_cache_stats();
+        assert_eq!(stats.miss_count, 3);
+        assert_eq!(stats.invalidation_count, 1);
     }
 
     #[test]

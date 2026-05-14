@@ -326,6 +326,38 @@ Elixir/ExUnit test discovery is conservative. It reports source `test` blocks th
 }
 ```
 
+### roots
+```json
+{
+  "count": 1,
+  "roots": [
+    {
+      "path": "/home/user/backend",
+      "file_count": 142,
+      "symbol_count": 1038,
+      "last_active": "2026-02-07T19:05:00Z",
+      "session_count": 1,
+      "readiness": "ready",
+      "ready": true,
+      "extraction_complete": true,
+      "last_indexed_at": "2026-02-07T19:04:58Z",
+      "watcher_enabled": true,
+      "watcher_state": "enabled",
+      "caller_cache_stats": {
+        "entry_count": 12,
+        "hit_count": 34,
+        "miss_count": 5,
+        "invalidation_count": 2
+      }
+    }
+  ]
+}
+```
+
+`caller_cache_stats` is a read-only snapshot. Misses include absent, stale,
+oversized, missing, and unsupported files; separate per-reason counters are not
+exposed.
+
 ## Symbol Kinds
 
 `function`, `method`, `class`, `struct`, `enum`, `trait`, `interface`, `constant`, `variable`, `type`, `module`

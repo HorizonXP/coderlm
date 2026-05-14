@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use tracing::info;
 
-use crate::index::file_tree::FileTree;
+use crate::index::file_tree::{CallSiteCacheStats, FileTree};
 use crate::index::{walker, watcher};
 use crate::ops::buffers::Buffer;
 use crate::ops::subcalls::SubcallResult;
@@ -44,6 +44,7 @@ pub struct ProjectStatusSnapshot {
     pub last_indexed_at: DateTime<Utc>,
     pub watcher_enabled: bool,
     pub watcher_state: &'static str,
+    pub caller_cache_stats: CallSiteCacheStats,
 }
 
 impl Project {
@@ -69,6 +70,7 @@ impl Project {
             } else {
                 "disabled"
             },
+            caller_cache_stats: self.file_tree.call_site_cache_stats(),
         }
     }
 
@@ -243,9 +245,22 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::call_site_cache::{CallSiteCacheLookup, CallSiteFact};
     use crate::index::file_entry::FileEntry;
     use crate::symbols::symbol::{Symbol, SymbolKind};
     use chrono::TimeZone;
+
+    fn fact(callee: &str) -> CallSiteFact {
+        CallSiteFact {
+            callee: callee.to_string(),
+            start_byte: 0,
+            end_byte: callee.len(),
+            line: 1,
+            text: format!("{callee}();"),
+            receiver: None,
+            call_kind: None,
+        }
+    }
 
     fn project_for_status() -> Project {
         let root = PathBuf::from("/tmp/coderlm-status-test");
@@ -320,5 +335,33 @@ mod tests {
 
         assert!(!status.watcher_enabled);
         assert_eq!(status.watcher_state, "disabled");
+    }
+
+    #[test]
+    fn status_includes_read_only_caller_cache_stats() {
+        let project = project_for_status();
+        let entry = FileEntry::new(
+            "src/lib.rs".to_string(),
+            24,
+            Utc.timestamp_opt(150, 0).unwrap(),
+        );
+        project.file_tree.insert(entry.clone());
+        project
+            .file_tree
+            .store_call_sites(&entry, vec![fact("cached")])
+            .unwrap();
+        assert!(matches!(
+            project.file_tree.call_site_cache_lookup("src/lib.rs", 100),
+            CallSiteCacheLookup::Hit(_)
+        ));
+
+        let status = project.status_snapshot();
+        assert_eq!(status.caller_cache_stats.entry_count, 1);
+        assert_eq!(status.caller_cache_stats.hit_count, 1);
+        assert_eq!(status.caller_cache_stats.miss_count, 0);
+        assert_eq!(status.caller_cache_stats.invalidation_count, 0);
+
+        let reread = project.status_snapshot();
+        assert_eq!(reread.caller_cache_stats, status.caller_cache_stats);
     }
 }

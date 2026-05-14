@@ -147,7 +147,11 @@ Check which projects are currently indexed:
 curl localhost:3000/api/v1/roots
 ```
 
-Returns each project's path, file count, symbol count, last active time, and session count.
+Returns each project's path, file count, symbol count, readiness state, watcher
+state, last active time, session count, and cheap caller-cache statistics. The
+caller-cache statistics are a read-only snapshot with entry, hit, miss, and
+invalidation counts; misses include unsupported files rather than exposing
+separate per-reason counters.
 
 List all active sessions:
 
