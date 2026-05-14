@@ -2,12 +2,17 @@ use dashmap::DashMap;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 
+use super::call_site_cache::{
+    CachedCallSites, CallSiteCacheFreshness, CallSiteCacheLookup, CallSiteCacheMissReason,
+    CallSiteFact,
+};
 use super::file_entry::{FileEntry, Language};
 
 /// Thread-safe file tree backed by a DashMap for concurrent access.
 pub struct FileTree {
     pub files: DashMap<String, FileEntry>,
     non_code_ranges: DashMap<String, CachedNonCodeRanges>,
+    call_site_cache: DashMap<String, CachedCallSites>,
 }
 
 #[derive(Clone)]
@@ -29,6 +34,7 @@ impl FileTree {
         Self {
             files: DashMap::new(),
             non_code_ranges: DashMap::new(),
+            call_site_cache: DashMap::new(),
         }
     }
 
@@ -39,6 +45,7 @@ impl FileTree {
 
     pub fn remove(&self, rel_path: &str) -> Option<FileEntry> {
         self.non_code_ranges.remove(rel_path);
+        self.purge_call_sites(rel_path);
         self.files.remove(rel_path).map(|(_, v)| v)
     }
 
@@ -100,6 +107,52 @@ impl FileTree {
                 ranges,
             },
         );
+    }
+
+    pub fn store_call_sites(
+        &self,
+        entry: &FileEntry,
+        facts: Vec<CallSiteFact>,
+    ) -> Result<(), CallSiteCacheMissReason> {
+        if !entry.language.has_tree_sitter_support() {
+            return Err(CallSiteCacheMissReason::Unsupported);
+        }
+
+        self.call_site_cache
+            .insert(entry.rel_path.clone(), CachedCallSites::new(entry, facts));
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn call_site_cache_lookup(
+        &self,
+        rel_path: &str,
+        max_file_size: u64,
+    ) -> CallSiteCacheLookup {
+        let Some(entry) = self.get(rel_path) else {
+            return CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Missing);
+        };
+
+        if entry.size > max_file_size {
+            return CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Oversized);
+        }
+
+        if !entry.language.has_tree_sitter_support() {
+            return CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Unsupported);
+        }
+
+        let Some(cached) = self.call_site_cache.get(rel_path) else {
+            return CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Absent);
+        };
+
+        match cached.freshness_against(&entry, max_file_size) {
+            CallSiteCacheFreshness::Fresh => CallSiteCacheLookup::Hit(cached.facts.clone()),
+            CallSiteCacheFreshness::Miss(reason) => CallSiteCacheLookup::Miss(reason),
+        }
+    }
+
+    pub fn purge_call_sites(&self, rel_path: &str) {
+        self.call_site_cache.remove(rel_path);
     }
 
     /// Render a tree-like structure string, similar to the `tree` command.
@@ -194,6 +247,14 @@ mod tests {
         )
     }
 
+    fn fact(callee: &str) -> CallSiteFact {
+        CallSiteFact {
+            callee: callee.to_string(),
+            line: 1,
+            text: format!("{callee}();"),
+        }
+    }
+
     #[test]
     fn non_code_range_cache_is_tied_to_file_metadata() {
         let tree = FileTree::new();
@@ -224,5 +285,73 @@ mod tests {
         tree.store_non_code_ranges("src/lib.rs", &changed, vec![(2, 5)]);
         tree.remove("src/lib.rs");
         assert_eq!(tree.cached_non_code_ranges("src/lib.rs", &changed), None);
+    }
+
+    #[test]
+    fn call_site_cache_uses_exact_project_relative_paths() {
+        let tree = FileTree::new();
+        let first = entry("crates/a/lib.rs", 10, 1);
+        let second = entry("crates/b/lib.rs", 10, 1);
+        tree.insert(first.clone());
+        tree.insert(second.clone());
+
+        tree.store_call_sites(&first, vec![fact("from_a")]).unwrap();
+        tree.store_call_sites(&second, vec![fact("from_b")])
+            .unwrap();
+
+        assert_eq!(
+            tree.call_site_cache_lookup("crates/a/lib.rs", 100),
+            CallSiteCacheLookup::Hit(vec![fact("from_a")])
+        );
+        assert_eq!(
+            tree.call_site_cache_lookup("crates/b/lib.rs", 100),
+            CallSiteCacheLookup::Hit(vec![fact("from_b")])
+        );
+    }
+
+    #[test]
+    fn call_site_cache_reports_missing_absent_unsupported_stale_and_oversized() {
+        let tree = FileTree::new();
+
+        assert_eq!(
+            tree.call_site_cache_lookup("src/missing.rs", 100),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Missing)
+        );
+
+        let absent = entry("src/absent.rs", 10, 1);
+        tree.insert(absent);
+        assert_eq!(
+            tree.call_site_cache_lookup("src/absent.rs", 100),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Absent)
+        );
+
+        let unsupported = entry("docs/readme.md", 10, 1);
+        tree.insert(unsupported.clone());
+        assert_eq!(
+            tree.store_call_sites(&unsupported, Vec::new()),
+            Err(CallSiteCacheMissReason::Unsupported)
+        );
+        assert_eq!(
+            tree.call_site_cache_lookup("docs/readme.md", 100),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Unsupported)
+        );
+
+        let original = entry("src/stale.rs", 10, 1);
+        tree.insert(original.clone());
+        tree.store_call_sites(&original, vec![fact("cached")])
+            .unwrap();
+        let changed = entry("src/stale.rs", 11, 1);
+        tree.insert(changed);
+        assert_eq!(
+            tree.call_site_cache_lookup("src/stale.rs", 100),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Stale)
+        );
+
+        let oversized = entry("src/oversized.rs", 101, 1);
+        tree.insert(oversized);
+        assert_eq!(
+            tree.call_site_cache_lookup("src/oversized.rs", 100),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Oversized)
+        );
     }
 }
