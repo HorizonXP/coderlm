@@ -1324,7 +1324,9 @@ mod tests {
     use chrono::Utc;
     use tempfile::TempDir;
 
-    use crate::index::call_site_cache::extract_call_site_facts;
+    use crate::index::call_site_cache::{
+        CallSiteCacheLookup, CallSiteCacheMissReason, extract_call_site_facts,
+    };
     use crate::index::file_entry::FileEntry;
 
     const SAMPLE_FILE: &str = "lib/sample.ex";
@@ -1477,7 +1479,7 @@ fn third() { target(); }
     }
 
     #[test]
-    fn caller_lookup_ignores_stale_cache_after_direct_metadata_mismatch() {
+    fn caller_lookup_reparses_after_direct_index_update_invalidates_cache() {
         let (temp_dir, file_tree, symbol_table) =
             index_rust_fixture(&[("src/lib.rs", "fn target() {}\nfn old() { target(); }\n")]);
         let root = temp_dir.path().to_path_buf();
@@ -1491,6 +1493,10 @@ fn fresh() { target(); }
         std::fs::write(root.join("src/lib.rs"), new_source).unwrap();
         let size = std::fs::metadata(root.join("src/lib.rs")).unwrap().len();
         file_tree.insert(FileEntry::new("src/lib.rs".to_string(), size, Utc::now()));
+        assert_eq!(
+            file_tree.call_site_cache_lookup("src/lib.rs", 1_000_000),
+            CallSiteCacheLookup::Miss(CallSiteCacheMissReason::Absent)
+        );
 
         reset_caller_ast_parse_count();
         let callers =
