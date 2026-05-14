@@ -327,11 +327,11 @@ curl -s -H "X-Session-Id: $SID" "localhost:3000/api/v1/peek?file=src/main.rs&sta
 
 ## grep
 
-Regex search across all indexed files. Supports scope-aware filtering and per-file restriction.
+Regex search across all indexed files. Supports scope-aware filtering and file path filtering.
 
 | REPL operation                  | Method | Endpoint | Params                                                                    |
 |---------------------------------|--------|----------|---------------------------------------------------------------------------|
-| `grep $pattern`                 | GET    | `/grep`  | `?pattern=...&max_matches=50&context_lines=2&scope=all|code&file=path`    |
+| `grep $pattern`                 | GET    | `/grep`  | `?pattern=...&max_matches=50&context_lines=2&scope=all|code&file=path&file_match=exact|suffix|contains` |
 
 ### Parameters
 
@@ -341,9 +341,10 @@ Regex search across all indexed files. Supports scope-aware filtering and per-fi
 | `max_matches`   | 50      | Cap on returned matches                                                |
 | `context_lines` | 2       | Lines of context before/after each match                               |
 | `scope`         | `all`   | `all` matches everywhere; `code` skips matches inside comment/string AST nodes (per-language tree-sitter aware) |
-| `file`          | —       | Restrict grep to a single file path                                    |
+| `file`          | —       | Filter grep by project-relative file path. Without `file_match`, legacy matching includes exact, contains, or suffix matches and may search multiple files. |
+| `file_match`    | —       | Optional match mode for `file`: `exact` matches only the project-relative path, `suffix` matches paths ending with the value, and `contains` matches paths containing the value. Explicit modes must resolve to exactly one indexed file; zero matches or multiple matches return an error. |
 
-Cost note: `scope=code` parses supported-language files to exclude comments and strings. Non-code ranges are cached per file and invalidated when indexed file metadata changes, so repeated identical queries avoid reparsing unchanged files. Prefer `file=` when the relevant path is known.
+Cost note: `scope=code` parses supported-language files to exclude comments and strings. Non-code ranges are cached per file and invalidated when indexed file metadata changes, so repeated identical queries avoid reparsing unchanged files. Prefer `file=` with `file_match=exact` when the relevant project-relative path is known.
 
 ### Response
 
@@ -369,9 +370,13 @@ Cost note: `scope=code` parses supported-language files to exclude comments and 
 curl -s -H "X-Session-Id: $SID" \
   "localhost:3000/api/v1/grep?pattern=TODO&scope=code"
 
-# Restrict to one file
+# Exact project-relative file match
 curl -s -H "X-Session-Id: $SID" \
-  "localhost:3000/api/v1/grep?pattern=DashMap&file=src/index/file_tree.rs"
+  "localhost:3000/api/v1/grep?pattern=DashMap&file=src%2Findex%2Ffile_tree.rs&file_match=exact"
+
+# Unique suffix match; returns an ambiguity error if more than one path ends this way
+curl -s -H "X-Session-Id: $SID" \
+  "localhost:3000/api/v1/grep?pattern=DashMap&file=file_tree.rs&file_match=suffix"
 ```
 
 ---

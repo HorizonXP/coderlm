@@ -50,8 +50,11 @@ python3 {{CLI_PATH}} search "symbol_name" --file path/to/file.py  # Restrict sea
 python3 {{CLI_PATH}} symbols --kind function --file path          # List all functions in a file
 python3 {{CLI_PATH}} grep "pattern" --max-matches 20              # Regex search
 python3 {{CLI_PATH}} grep "pattern" --scope code                   # Skip matches in comments/strings
-python3 {{CLI_PATH}} grep "pattern" --file path/to/file.py        # Restrict grep to one file
+python3 {{CLI_PATH}} grep "pattern" --file path/to/file.py --file-match exact  # Match one exact project-relative file
+python3 {{CLI_PATH}} grep "pattern" --file file.py --file-match suffix         # Match one unique suffix
 ```
+
+For `grep`, `--file` alone keeps legacy broad matching: exact path, path contains, or suffix. Use `--file-match exact`, `--file-match suffix`, or `--file-match contains` when the file filter must resolve to exactly one indexed file; explicit modes report zero-match and ambiguous multi-match errors.
 
 ### Retrieving Exact Code
 

@@ -94,10 +94,12 @@ Available helpers in exec mode: `search()`, `impl_()`, `callers()`, `tests()`, `
 | `impl SYMBOL --file FILE` | Get full source code |
 | `callers SYMBOL --file FILE` | Find call sites |
 | `tests SYMBOL --file FILE` | Find tests referencing symbol |
-| `grep PATTERN [--scope code] [--file FILE]` | Regex search (`--scope code` skips comments) |
+| `grep PATTERN [--scope code] [--file FILE] [--file-match exact|suffix|contains]` | Regex search; use `--file-match exact` for one project-relative file |
 | `peek FILE --start N --end N` | Read a line range |
 | `symbols [--file FILE] [--kind KIND]` | List all symbols |
 | `structure [--depth N]` | Project file tree |
+
+For `grep`, `--file` alone uses legacy broad matching: exact path, path contains, or suffix. Add `--file-match exact`, `--file-match suffix`, or `--file-match contains` to request one explicit mode. Explicit modes return an error when the filter matches zero files or more than one file.
 
 ## Fallback Rules (coderlm only — not raw bash)
 
