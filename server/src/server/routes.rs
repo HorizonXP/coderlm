@@ -143,6 +143,7 @@ async fn list_roots(State(state): State<AppState>) -> Json<Value> {
         .iter()
         .map(|entry| {
             let project = entry.value();
+            let status = project.status_snapshot();
             let session_count = state
                 .inner
                 .sessions
@@ -150,11 +151,17 @@ async fn list_roots(State(state): State<AppState>) -> Json<Value> {
                 .filter(|s| s.value().project_path == *entry.key())
                 .count();
             json!({
-                "path": project.root.display().to_string(),
-                "file_count": project.file_tree.len(),
-                "symbol_count": project.symbol_table.len(),
+                "path": status.path,
+                "file_count": status.file_count,
+                "symbol_count": status.symbol_count,
                 "last_active": (*project.last_active.lock()).to_rfc3339(),
                 "session_count": session_count,
+                "readiness": status.readiness,
+                "ready": status.ready,
+                "extraction_complete": status.extraction_complete,
+                "last_indexed_at": status.last_indexed_at.to_rfc3339(),
+                "watcher_enabled": status.watcher_enabled,
+                "watcher_state": status.watcher_state,
             })
         })
         .collect();

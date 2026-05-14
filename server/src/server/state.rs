@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -23,12 +24,59 @@ pub struct Project {
     #[allow(dead_code)]
     pub watcher: Option<watcher::WatcherHandle>,
     pub last_active: Mutex<DateTime<Utc>>,
+    pub last_indexed_at: Arc<Mutex<DateTime<Utc>>>,
+    initial_extraction_complete: AtomicBool,
     /// Named buffers for storing code snippets.
     pub buffers: DashMap<String, Buffer>,
     /// JSON variables for RLM state management.
     pub variables: DashMap<String, serde_json::Value>,
     /// Subcall results from recursive LLM queries.
     pub subcall_results: Mutex<Vec<SubcallResult>>,
+}
+
+pub struct ProjectStatusSnapshot {
+    pub path: String,
+    pub file_count: usize,
+    pub symbol_count: usize,
+    pub extraction_complete: bool,
+    pub ready: bool,
+    pub readiness: &'static str,
+    pub last_indexed_at: DateTime<Utc>,
+    pub watcher_enabled: bool,
+    pub watcher_state: &'static str,
+}
+
+impl Project {
+    pub fn status_snapshot(&self) -> ProjectStatusSnapshot {
+        let extraction_complete = self.initial_extraction_complete.load(Ordering::Acquire);
+        let watcher_enabled = self.watcher.is_some();
+
+        ProjectStatusSnapshot {
+            path: self.root.display().to_string(),
+            file_count: self.file_tree.len(),
+            symbol_count: self.symbol_table.len(),
+            extraction_complete,
+            ready: extraction_complete,
+            readiness: if extraction_complete {
+                "ready"
+            } else {
+                "indexing"
+            },
+            last_indexed_at: *self.last_indexed_at.lock(),
+            watcher_enabled,
+            watcher_state: if watcher_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+        }
+    }
+
+    fn mark_initial_extraction_complete(&self) {
+        self.initial_extraction_complete
+            .store(true, Ordering::Release);
+        *self.last_indexed_at.lock() = Utc::now();
+    }
 }
 
 /// Shared application state, wrapped in Arc for axum handlers.
@@ -91,6 +139,7 @@ impl AppState {
         info!("Indexed {} files for {}", file_count, canonical.display());
 
         // Start watcher unless disabled for large/generated-heavy workspaces.
+        let last_indexed_at = Arc::new(Mutex::new(Utc::now()));
         let watcher_handle = if std::env::var("CODERLM_DISABLE_WATCHER").is_ok() {
             None
         } else {
@@ -99,6 +148,7 @@ impl AppState {
                 file_tree.clone(),
                 symbol_table.clone(),
                 max_file_size,
+                last_indexed_at.clone(),
             )
             .ok()
         };
@@ -109,6 +159,8 @@ impl AppState {
             symbol_table: symbol_table.clone(),
             watcher: watcher_handle,
             last_active: Mutex::new(Utc::now()),
+            last_indexed_at,
+            initial_extraction_complete: AtomicBool::new(false),
             buffers: DashMap::new(),
             variables: DashMap::new(),
             subcall_results: Mutex::new(Vec::new()),
@@ -119,6 +171,7 @@ impl AppState {
         // Spawn symbol extraction in background
         let ft = file_tree;
         let st = symbol_table;
+        let project_for_extraction = project.clone();
         let root = project.root.clone();
         tokio::spawn(async move {
             info!("Starting symbol extraction for {}...", root.display());
@@ -126,6 +179,7 @@ impl AppState {
                 Ok(count) => info!("Extracted {} symbols for {}", count, root.display()),
                 Err(e) => tracing::error!("Symbol extraction failed for {}: {}", root.display(), e),
             }
+            project_for_extraction.mark_initial_extraction_complete();
         });
 
         Ok(project)
@@ -183,5 +237,88 @@ impl AppState {
             .retain(|_, session| session.project_path != path);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::file_entry::FileEntry;
+    use crate::symbols::symbol::{Symbol, SymbolKind};
+    use chrono::TimeZone;
+
+    fn project_for_status() -> Project {
+        let root = PathBuf::from("/tmp/coderlm-status-test");
+        Project {
+            root,
+            file_tree: Arc::new(FileTree::new()),
+            symbol_table: Arc::new(SymbolTable::new()),
+            watcher: None,
+            last_active: Mutex::new(Utc.timestamp_opt(100, 0).unwrap()),
+            last_indexed_at: Arc::new(Mutex::new(Utc.timestamp_opt(200, 0).unwrap())),
+            initial_extraction_complete: AtomicBool::new(false),
+            buffers: DashMap::new(),
+            variables: DashMap::new(),
+            subcall_results: Mutex::new(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn status_reports_indexing_before_initial_extraction_completes() {
+        let project = project_for_status();
+        project.file_tree.insert(FileEntry::new(
+            "src/lib.rs".to_string(),
+            24,
+            Utc.timestamp_opt(150, 0).unwrap(),
+        ));
+
+        let status = project.status_snapshot();
+
+        assert_eq!(status.path, "/tmp/coderlm-status-test");
+        assert_eq!(status.file_count, 1);
+        assert_eq!(status.symbol_count, 0);
+        assert!(!status.extraction_complete);
+        assert!(!status.ready);
+        assert_eq!(status.readiness, "indexing");
+        assert_eq!(status.last_indexed_at, Utc.timestamp_opt(200, 0).unwrap());
+    }
+
+    #[test]
+    fn status_reports_ready_after_initial_extraction_completes() {
+        let project = project_for_status();
+        project.file_tree.insert(FileEntry::new(
+            "src/lib.rs".to_string(),
+            24,
+            Utc.timestamp_opt(150, 0).unwrap(),
+        ));
+        project.symbol_table.insert(Symbol {
+            name: "ready".to_string(),
+            kind: SymbolKind::Function,
+            file: "src/lib.rs".to_string(),
+            byte_range: (0, 24),
+            line_range: (1, 1),
+            language: crate::index::file_entry::Language::Rust,
+            signature: "fn ready() {}".to_string(),
+            definition: None,
+            parent: None,
+        });
+
+        project.mark_initial_extraction_complete();
+        let status = project.status_snapshot();
+
+        assert_eq!(status.file_count, 1);
+        assert_eq!(status.symbol_count, 1);
+        assert!(status.extraction_complete);
+        assert!(status.ready);
+        assert_eq!(status.readiness, "ready");
+    }
+
+    #[test]
+    fn status_reports_explicit_watcher_disabled_state() {
+        let project = project_for_status();
+        let status = project.status_snapshot();
+
+        assert!(!status.watcher_enabled);
+        assert_eq!(status.watcher_state, "disabled");
     }
 }

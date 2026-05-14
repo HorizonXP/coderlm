@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,6 +21,7 @@ pub fn start_watcher(
     file_tree: Arc<FileTree>,
     symbol_table: Arc<SymbolTable>,
     max_file_size: u64,
+    last_indexed_at: Arc<Mutex<DateTime<Utc>>>,
 ) -> Result<WatcherHandle> {
     let root_buf = root.to_path_buf();
     let root_for_handler = root_buf.clone();
@@ -29,13 +31,16 @@ pub fn start_watcher(
         move |result: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
             match result {
                 Ok(events) => {
-                    handle_events(
+                    let stats = handle_events(
                         &root_for_handler,
                         &file_tree,
                         &symbol_table,
                         max_file_size,
                         events,
                     );
+                    if stats.index_changed() {
+                        *last_indexed_at.lock() = Utc::now();
+                    }
                 }
                 Err(e) => {
                     warn!("Filesystem watcher error: {}", e);
@@ -228,6 +233,10 @@ struct WatcherEventStats {
 impl WatcherEventStats {
     fn unique_paths(&self) -> usize {
         self.changed_files + self.deleted_files + self.removed_oversize_files + self.skipped_events
+    }
+
+    fn index_changed(&self) -> bool {
+        self.changed_files > 0 || self.deleted_files > 0 || self.removed_oversize_files > 0
     }
 }
 
