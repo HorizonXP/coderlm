@@ -402,8 +402,9 @@ pub async fn extract_all_symbols(
                     }
                     if let Ok(source) = std::fs::read_to_string(root.join(&rel_path)) {
                         if let Some(entry) = file_tree.get(&rel_path) {
-                            let facts = extract_call_site_facts(&source, language);
-                            let _ = file_tree.store_call_sites(&entry, facts);
+                            if let Some(facts) = extract_call_site_facts(&source, language) {
+                                let _ = file_tree.store_call_sites(&entry, facts);
+                            }
                         }
                     }
                     // Mark file as having symbols extracted

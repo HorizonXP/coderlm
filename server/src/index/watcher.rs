@@ -194,8 +194,9 @@ fn handle_file_change(
                 }
                 if let Ok(source) = std::fs::read_to_string(abs_path) {
                     if let Some(entry) = file_tree.get(rel_path) {
-                        let facts = extract_call_site_facts(&source, language);
-                        let _ = file_tree.store_call_sites(&entry, facts);
+                        if let Some(facts) = extract_call_site_facts(&source, language) {
+                            let _ = file_tree.store_call_sites(&entry, facts);
+                        }
                     }
                 }
                 if let Some(mut entry) = file_tree.files.get_mut(rel_path) {
