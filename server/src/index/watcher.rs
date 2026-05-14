@@ -9,6 +9,7 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::config;
+use crate::index::call_site_cache::extract_call_site_facts;
 use crate::index::file_entry::FileEntry;
 use crate::index::file_tree::FileTree;
 use crate::symbols::SymbolTable;
@@ -190,6 +191,12 @@ fn handle_file_change(
                 let count = symbols.len();
                 for sym in symbols {
                     symbol_table.insert(sym);
+                }
+                if let Ok(source) = std::fs::read_to_string(abs_path) {
+                    if let Some(entry) = file_tree.get(rel_path) {
+                        let facts = extract_call_site_facts(&source, language);
+                        let _ = file_tree.store_call_sites(&entry, facts);
+                    }
                 }
                 if let Some(mut entry) = file_tree.files.get_mut(rel_path) {
                     entry.symbols_extracted = true;

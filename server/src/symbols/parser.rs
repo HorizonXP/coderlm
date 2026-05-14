@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 use tree_sitter::StreamingIterator;
 
+use crate::index::call_site_cache::extract_call_site_facts;
 use crate::index::file_entry::Language;
 use crate::index::file_tree::FileTree;
 use crate::symbols::SymbolTable;
@@ -398,6 +399,12 @@ pub async fn extract_all_symbols(
                     let count = symbols.len();
                     for sym in symbols {
                         symbol_table.insert(sym);
+                    }
+                    if let Ok(source) = std::fs::read_to_string(root.join(&rel_path)) {
+                        if let Some(entry) = file_tree.get(&rel_path) {
+                            let facts = extract_call_site_facts(&source, language);
+                            let _ = file_tree.store_call_sites(&entry, facts);
+                        }
                     }
                     // Mark file as having symbols extracted
                     if let Some(mut entry) = file_tree.files.get_mut(&rel_path) {
