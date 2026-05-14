@@ -179,6 +179,7 @@ pub(crate) fn call_site_receiver(
     match language {
         Language::Rust => rust_call_receiver(source, callee_node),
         Language::Elixir => elixir_call_site_receiver(source, callee_node),
+        Language::Python => python_call_site_receiver(source, callee_node),
         Language::TypeScript | Language::JavaScript => {
             typescript_call_site_receiver(source, callee_node)
         }
@@ -193,6 +194,21 @@ fn elixir_call_site_receiver(source: &str, callee_node: tree_sitter::Node) -> Op
     }
 
     let receiver = dot.child_by_field_name("left")?;
+    receiver
+        .utf8_text(source.as_bytes())
+        .ok()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn python_call_site_receiver(source: &str, callee_node: tree_sitter::Node) -> Option<String> {
+    let attribute = callee_node.parent()?;
+    if attribute.kind() != "attribute" {
+        return None;
+    }
+
+    let receiver = attribute.child_by_field_name("object")?;
     receiver
         .utf8_text(source.as_bytes())
         .ok()
