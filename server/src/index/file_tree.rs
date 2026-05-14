@@ -255,6 +255,7 @@ mod tests {
             line: 1,
             text: format!("{callee}();"),
             receiver: None,
+            call_kind: None,
         }
     }
 

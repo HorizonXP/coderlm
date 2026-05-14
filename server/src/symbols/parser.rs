@@ -67,6 +67,9 @@ pub fn extract_symbols_from_file(
                 "function.def" => {
                     def_node = Some(cap.node);
                 }
+                "function.parent" => {
+                    parent = Some(text.to_string());
+                }
                 "method.name" => {
                     name = Some(text.to_string());
                     kind = Some(SymbolKind::Method);
@@ -213,10 +216,16 @@ pub fn extract_symbols_from_file(
                     .saturating_sub(symbols[prev_idx].byte_range.0);
                 if range_size > prev_size {
                     best.insert(key, i);
-                } else if range_size == prev_size
-                    && kind_priority(sym.kind) > kind_priority(symbols[prev_idx].kind)
-                {
-                    best.insert(key, i);
+                } else if range_size == prev_size {
+                    let prev_parent = symbols[prev_idx].parent.is_some();
+                    let should_replace = kind_priority(sym.kind)
+                        > kind_priority(symbols[prev_idx].kind)
+                        || (kind_priority(sym.kind) == kind_priority(symbols[prev_idx].kind)
+                            && sym.parent.is_some()
+                            && !prev_parent);
+                    if should_replace {
+                        best.insert(key, i);
+                    }
                 }
             } else {
                 best.insert(key, i);

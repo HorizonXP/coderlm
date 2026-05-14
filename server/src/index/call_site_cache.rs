@@ -32,6 +32,17 @@ pub struct CallSiteFact {
     pub line: usize,
     pub text: String,
     pub receiver: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_kind: Option<CallSiteKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallSiteKind {
+    Bare,
+    Method,
+    Qualified,
+    Macro,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +148,7 @@ pub fn extract_call_site_facts(source: &str, language: Language) -> Option<Vec<C
                 .unwrap_or("")
                 .to_string();
             let receiver = call_site_receiver(source, language, cap.node);
+            let call_kind = call_site_kind(language, cap.node);
             let line = cap.node.start_position().row + 1;
             let text = source
                 .lines()
@@ -151,6 +163,7 @@ pub fn extract_call_site_facts(source: &str, language: Language) -> Option<Vec<C
                 line,
                 text,
                 receiver,
+                call_kind,
             });
         }
     }
@@ -163,6 +176,10 @@ fn call_site_receiver(
     language: Language,
     callee_node: tree_sitter::Node,
 ) -> Option<String> {
+    if language == Language::Rust {
+        return rust_call_receiver(source, callee_node);
+    }
+
     if language != Language::Elixir {
         return None;
     }
@@ -173,6 +190,37 @@ fn call_site_receiver(
     }
 
     let receiver = dot.child_by_field_name("left")?;
+    receiver
+        .utf8_text(source.as_bytes())
+        .ok()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn call_site_kind(language: Language, callee_node: tree_sitter::Node) -> Option<CallSiteKind> {
+    if language != Language::Rust {
+        return None;
+    }
+
+    let parent = callee_node.parent()?;
+    match parent.kind() {
+        "call_expression" => Some(CallSiteKind::Bare),
+        "field_expression" => Some(CallSiteKind::Method),
+        "scoped_identifier" => Some(CallSiteKind::Qualified),
+        "macro_invocation" => Some(CallSiteKind::Macro),
+        _ => None,
+    }
+}
+
+fn rust_call_receiver(source: &str, callee_node: tree_sitter::Node) -> Option<String> {
+    let parent = callee_node.parent()?;
+    let receiver = match parent.kind() {
+        "field_expression" => parent.child_by_field_name("value"),
+        "scoped_identifier" => parent.child_by_field_name("path"),
+        _ => None,
+    }?;
+
     receiver
         .utf8_text(source.as_bytes())
         .ok()
