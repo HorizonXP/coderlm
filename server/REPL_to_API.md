@@ -31,6 +31,12 @@ curl -H "X-Session-Id: $SESSION" ...
 
 If the project was evicted due to capacity limits, requests using that session will return `410 Gone`. Create a new session to re-index.
 
+Initial directory scanning is synchronous, so the returned `structure` and
+file-oriented endpoints can be used immediately. Symbol extraction then
+continues in the background. Use the admin `/roots` endpoint to distinguish a
+project that is still `"indexing"` from one that is `"ready"` before relying on
+complete symbol, caller, test, or variable results.
+
 ---
 
 ## structure
@@ -301,6 +307,10 @@ Read a range of lines from a file. Line numbers are 0-indexed (start inclusive, 
 |-------------------------|--------|----------|-------------------------------------|
 | `peek $file $start $end`| GET    | `/peek`  | `?file=...&start=0&end=100`         |
 
+`file` must be the exact project-relative indexed path. `peek` does not apply
+suffix or contains matching; use `/grep?file=...&file_match=...` when a path
+needs explicit exact, suffix, or contains resolution.
+
 ### Response
 
 ```json
@@ -345,6 +355,19 @@ Regex search across all indexed files. Supports scope-aware filtering and file p
 | `file_match`    | —       | Optional match mode for `file`: `exact` matches only the project-relative path, `suffix` matches paths ending with the value, and `contains` matches paths containing the value. Explicit modes must resolve to exactly one indexed file; zero matches or multiple matches return an error. |
 
 Cost note: `scope=code` parses supported-language files to exclude comments and strings. Non-code ranges are cached per file and invalidated when indexed file metadata changes, so repeated identical queries avoid reparsing unchanged files. Prefer `file=` with `file_match=exact` when the relevant project-relative path is known.
+
+File matching notes:
+
+- `file_match=exact` prevents accidental broad matches by requiring `file` to
+  equal one indexed project-relative path.
+- `file_match=suffix` is useful for unique endings such as `src/main.rs`, but
+  returns an ambiguity error if more than one indexed path has that suffix.
+- `file_match=contains` is useful for unique path fragments, and also returns
+  an ambiguity error when the fragment matches multiple indexed paths.
+- `file_match` without `file` is rejected. Unsupported values are rejected; the
+  only supported values are `exact`, `suffix`, and `contains`.
+- Omitting `file_match` keeps compatibility matching: `file` may match exact,
+  containing, or suffix paths and may search multiple files.
 
 ### Response
 
@@ -543,6 +566,23 @@ cached entry count, caller-cache hits, caller-cache misses, and actual cache
 entry invalidations. Misses include absent, stale, oversized, missing, and
 unsupported files; separate per-reason counters are not exposed because they
 would add tracking complexity beyond the status surface.
+
+Status semantics:
+
+- `readiness` is `"indexing"` until initial background symbol extraction has
+  completed, then `"ready"`.
+- `ready` mirrors the readiness state as a boolean; `extraction_complete`
+  exposes the same initial extraction completion flag.
+- While a root is `"indexing"`, file-tree and exact file content operations can
+  already work from the cold-scan index, but symbol-dependent results may be
+  partial. Poll `/roots` and wait for `"ready"` when complete symbol, caller,
+  test, or variable coverage matters.
+- `last_indexed_at` is the most recent index timestamp tracked for the root. It
+  is refreshed when initial extraction completes and after watcher-driven file
+  re-indexes.
+- `watcher_enabled` and `watcher_state` report whether the live filesystem
+  watcher is active (`"enabled"`) or disabled (`"disabled"`), for example when
+  `CODERLM_DISABLE_WATCHER=1` is set.
 
 ---
 
