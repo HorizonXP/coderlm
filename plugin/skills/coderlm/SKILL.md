@@ -49,6 +49,7 @@ For a single targeted lookup:
 python3 $CLI search MyFunction
 python3 $CLI impl MyFunction --file path/to/file.py
 python3 $CLI callers MyFunction --file path/to/file.py
+python3 $CLI variables MyFunction --file path/to/file.py
 ```
 
 ## Multiple Lookups: Batch Mode
@@ -90,14 +91,19 @@ Available helpers in exec mode: `search()`, `impl_()`, `callers()`, `tests()`, `
 
 | Command | Purpose |
 |---------|---------|
+| `status` | Show server and session status |
 | `search QUERY [--file FILE]` | Find symbols by name |
 | `impl SYMBOL --file FILE` | Get full source code |
 | `callers SYMBOL --file FILE` | Find call sites |
 | `tests SYMBOL --file FILE` | Find tests referencing symbol |
+| `variables FUNCTION --file FILE` | List local variables in a function |
 | `grep PATTERN [--scope code] [--file FILE] [--file-match exact|suffix|contains]` | Regex search; use `--file-match exact` for one project-relative file |
 | `peek FILE --start N --end N` | Read a line range |
+| `chunks FILE [--size N] [--overlap N]` | Compute byte-range chunk boundaries for large files |
 | `symbols [--file FILE] [--kind KIND]` | List all symbols |
 | `structure [--depth N]` | Project file tree |
+| `define-file` / `define-symbol` / `mark` | Add file and symbol annotations |
+| `save-annotations` / `load-annotations` | Persist or restore annotations |
 
 For `grep`, `--file` alone uses legacy broad matching: exact path, path contains, or suffix. Add `--file-match exact`, `--file-match suffix`, or `--file-match contains` to request one explicit mode. Explicit modes return an error when the filter matches zero files or more than one file.
 
@@ -130,11 +136,12 @@ If no query is provided, ask what the user wants to find or understand about the
 3. **Find the entrypoint** — `cli search` or `cli grep` to locate the starting symbol or pattern.
 4. **Retrieve** — `cli impl` to read the exact implementation. Not the file. The function.
 5. **Trace** — `cli callers` to see what calls it. `cli impl` on those callers. Follow the chain.
-6. **Widen** — `cli tests` to find test coverage. `cli grep` for related patterns discovered during tracing.
-7. **Annotate** — `cli define-symbol` and `cli define-file` as understanding solidifies.
-8. **Synthesize** — Compile findings into a coherent answer with specific file:line references.
+6. **Inspect internals** — Use `cli variables` when local bindings clarify the function. Use `cli chunks` before slicing very large files.
+7. **Widen** — `cli tests` to find test coverage. `cli grep` for related patterns discovered during tracing.
+8. **Annotate** — `cli define-symbol`, `cli define-file`, and `cli mark` as understanding solidifies; save durable notes with `cli save-annotations`.
+9. **Synthesize** — Compile findings into a coherent answer with specific file:line references.
 
-Steps 3–7 repeat. A typical exploration is: find a symbol → read its implementation → trace its callers → read those implementations → discover related symbols → repeat until the causal chain is clear.
+Steps 3–8 repeat. A typical exploration is: find a symbol → read its implementation → trace its callers → inspect variables or chunks when needed → discover related symbols → repeat until the causal chain is clear.
 
 ## When to Use the Server vs Native Tools
 
@@ -146,6 +153,8 @@ Steps 3–7 repeat. A typical exploration is: find a symbol → read its impleme
 | Read specific lines | `peek` | Surgical extraction, not the whole file |
 | Find what calls a function | `callers` | Cross-project search with exact call sites |
 | Find tests for a function | `tests` | By symbol reference, not filename guessing |
+| Inspect local bindings | `variables` | Quickly understand function internals |
+| Plan large-file reads | `chunks` | Get byte ranges before targeted slicing |
 | Get project overview | `structure` | Tree with file counts and language breakdown |
 | Read an entire small file | Read tool | When you genuinely need the whole file |
 
