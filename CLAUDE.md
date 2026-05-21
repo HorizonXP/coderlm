@@ -100,3 +100,20 @@ Session state cached in `.claude/coderlm_state/session.json`. The CLI must be ru
 ## Workflow: Codebase Exploration
 
 Always use `/coderlm` (the coderlm skill) when exploring this codebase. It provides indexed lookups for symbols, implementations, callers, and tests — much faster and more precise than globbing/grepping/reading files manually. Start with `init`, then use `search`, `impl`, `callers`, `grep`, etc. See `plugin/skills/coderlm/` for full reference.
+
+## Autonomous worker guidance
+
+- Follow the issue scope and acceptance criteria.
+- Keep changes minimal and avoid unrelated refactors.
+- Run the documented validation commands before handoff.
+
+Gap code: rop.autonomous_guidance
+
+# Validation
+
+Document the commands contributors and agents should run before handoff.
+
+- Run the repo's fast local verification command: `cd server && cargo check`.
+- Run targeted tests for changed behavior when available: `cd server && cargo test`.
+
+Gap code: rop.validation_commands
