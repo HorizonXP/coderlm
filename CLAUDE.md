@@ -42,6 +42,28 @@ curl http://127.0.0.1:3000/api/v1/health
 
 There are no tests yet. When adding tests, use `cargo test` from `server/`.
 
+## Autonomous Worker Guidance
+
+- Follow the issue scope and acceptance criteria.
+- Keep changes minimal and avoid unrelated refactors.
+- Run the documented validation commands before handoff.
+
+Gap code: rop.autonomous_guidance
+
+## Validation
+
+Use the smallest target-repository commands that match the files changed.
+
+Recommended current checks:
+- `cd server && cargo check` (typecheck; from `server/Cargo.toml`)
+- `cd server && cargo test` (test; from `server/Cargo.toml`)
+
+Notes:
+- Use target-repository commands only; ignore unrelated Journey application gates.
+- Prefer fast preflight or typecheck commands for setup-doc changes, then targeted tests when behavior changes.
+
+Gap code: rop.validation_commands
+
 ## Server Architecture
 
 The server is a single-binary axum application. Key modules under `server/src/`:
