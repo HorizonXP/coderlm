@@ -100,3 +100,49 @@ Session state cached in `.claude/coderlm_state/session.json`. The CLI must be ru
 ## Workflow: Codebase Exploration
 
 Always use `/coderlm` (the coderlm skill) when exploring this codebase. It provides indexed lookups for symbols, implementations, callers, and tests — much faster and more precise than globbing/grepping/reading files manually. Start with `init`, then use `search`, `impl`, `callers`, `grep`, etc. See `plugin/skills/coderlm/` for full reference.
+
+## Autonomous Worker Guidance
+
+- Follow the issue scope and acceptance criteria.
+- Keep changes minimal and avoid unrelated refactors.
+- Run the documented validation commands before handoff.
+- Follow the repository language, formatting, linting, and testing standards documented below.
+
+## Detected Stack
+
+- Languages/toolchains: Rust, Python
+- Managed runtime profile: `polyglot`
+
+## Formatting, Linting, and Tests
+
+- Rust: formatter `rustfmt via cargo fmt`, linter `Clippy`, tests `cargo test`
+- Python: formatter `Ruff formatter`, linter `Ruff`, tests `python -m pytest`
+
+## Coding Guidelines
+
+- Use `cargo fmt`/rustfmt for formatting; do not hand-format Rust style.
+- Run Clippy for changed crates and treat warnings as blockers unless the repo documents otherwise.
+- Prefer small, typed modules with explicit error handling and targeted tests for changed behavior.
+- Use existing Python tooling if configured; otherwise prefer Ruff for linting and formatting.
+- Keep import ordering and formatting automated rather than hand-tuned.
+- Add focused tests for changed behavior and preserve type-checking gates when the repo already has them.
+
+## Validation
+
+Contributors and agents must run the repository's documented validation commands before handoff.
+
+- Prefer existing repo scripts and CI commands when they are present.
+- Add targeted tests for changed behavior when available.
+- Document command results in the pull request.
+
+## Validation Commands
+
+- `cargo test`
+- `cargo check`
+- `cargo fmt --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `ruff check .`
+- `ruff format --check .`
+- `python -m pytest`
+
+Gap codes: `rop.autonomous_guidance`, `rop.validation_commands`
