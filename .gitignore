@@ -4,3 +4,5 @@ server/target/
 __pycache__/
 scripts/hot-swap.sh
 scripts/bump-version.sh
+benchmarks/load/reports/*
+!benchmarks/load/reports/.gitkeep
