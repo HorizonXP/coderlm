@@ -1,0 +1,36 @@
+{
+  "scenario_id": "SCENARIO-04",
+  "name": "Mutable fixture working-copy preparation",
+  "workload_id": "watcher_mutation_prep",
+  "agent_count": 4,
+  "project_count": 2,
+  "duration_seconds": 60,
+  "request_pacing": {
+    "mode": "fixed_rps",
+    "requests_per_second": 1.0
+  },
+  "fixture_id": "starter-project",
+  "scenario_mix": [
+    {
+      "operation": "touch_file",
+      "weight": 1
+    },
+    {
+      "operation": "append_file",
+      "weight": 1
+    },
+    {
+      "operation": "replace_file",
+      "weight": 1
+    }
+  ],
+  "server_options": {
+    "host": "127.0.0.1",
+    "port": 3001,
+    "reuse_existing": false
+  },
+  "cpu_profile_label": "flamegraph",
+  "output_dir": "benchmarks/load/reports/watcher-mutation",
+  "readiness_timeout_seconds": 30,
+  "reliability_threshold": 0.99
+}

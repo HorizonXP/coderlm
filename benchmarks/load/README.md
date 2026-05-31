@@ -9,7 +9,7 @@ CodeRLM, or any workload process.
 
 - `runner/` - `python -m benchmarks.load.runner` validation entry point.
 - `scenarios/` - checked-in JSON scenario definitions.
-- `fixtures/` - fixture identifiers referenced by scenario configs.
+- `fixtures/` - deterministic fixture repositories and `metadata.json`.
 - `reports/` - generated report root. A run should write
   `benchmarks/load/reports/<run-id>/report.json`; generated reports are ignored
   by default.
@@ -52,3 +52,20 @@ Every normalized scenario includes these workload knobs:
 The workload extension point is `workload_id`. Add new workload IDs to
 `SUPPORTED_WORKLOADS` and implement the workload behind that ID in a later
 runner step; scenario file field names do not need to change.
+
+## Fixture Contract
+
+Fixture IDs are resolved through `benchmarks/load/fixtures/metadata.json`.
+Current stable IDs:
+
+- `starter-project` - small Python fixture with known symbols, callers, tests,
+  grep target, and watcher mutation files.
+- `mixed-language-project` - larger deterministic mixed-language fixture
+  covering Rust, Python, TypeScript, JavaScript, and Go.
+
+Use `prepare_fixture_working_copy()` from `benchmarks.load.fixtures_support`
+before watcher churn workloads. Mutation helpers accept the prepared working
+copy object and mutate only that run-specific copy. Checked-in fixture sources
+are validated as immutable inputs and should remain byte-for-byte comparable
+between runs. Generated-heavy directories such as `target`, `node_modules`,
+`__pycache__`, and `.coderlm` are documented as excluded fixture copy inputs.

@@ -8,19 +8,31 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchmarks.load.fixtures_support import FixtureError, resolve_fixture
+
 
 HARNESS_ROOT = Path(__file__).resolve().parent
 SCENARIOS_DIR = HARNESS_ROOT / "scenarios"
 FIXTURES_DIR = HARNESS_ROOT / "fixtures"
 REPORTS_DIR = HARNESS_ROOT / "reports"
 
-SUPPORTED_SCENARIO_IDS = {"SCENARIO-01", "SCENARIO-02"}
-SUPPORTED_WORKLOADS = {"symbol_lookup_smoke", "mixed_read_smoke"}
+SUPPORTED_SCENARIO_IDS = {"SCENARIO-01", "SCENARIO-02", "SCENARIO-03", "SCENARIO-04"}
+SUPPORTED_WORKLOADS = {
+    "symbol_lookup_smoke",
+    "mixed_read_smoke",
+    "fixture_metadata_smoke",
+    "watcher_mutation_prep",
+}
 SUPPORTED_OPERATIONS = {
+    "grep",
     "search_symbols",
     "read_implementation",
     "list_callers",
+    "list_tests",
     "peek_file",
+    "touch_file",
+    "append_file",
+    "replace_file",
 }
 SUPPORTED_CPU_PROFILES = {"none", "wall-clock", "flamegraph"}
 SUPPORTED_PACING_MODES = {"fixed_rps"}
@@ -112,6 +124,7 @@ def load_scenario(path: Path, overrides: ScenarioOverrides | None = None) -> dic
     if errors:
         raise ConfigValidationError(errors)
 
+    normalized["fixture"] = resolve_fixture(normalized["fixture_id"]).as_dict()
     normalized["report_path"] = str(Path(normalized["output_dir"]) / "report.json")
     return normalized
 
@@ -173,8 +186,11 @@ def _validate(config: dict[str, Any]) -> list[str]:
         )
 
     fixture_id = config.get("fixture_id")
-    if isinstance(fixture_id, str) and not (FIXTURES_DIR / fixture_id).is_dir():
-        errors.append(f"unknown fixture_id: {fixture_id}")
+    if isinstance(fixture_id, str):
+        try:
+            resolve_fixture(fixture_id)
+        except FixtureError as exc:
+            errors.append(str(exc))
 
     _validate_pacing(config.get("request_pacing"), errors)
     _validate_server_options(config.get("server_options"), errors)
