@@ -44,6 +44,18 @@ plugin/                          Self-contained Claude Code plugin
 .claude-plugin/                  Marketplace manifest (points to plugin/)
 ```
 
+## Repository Health Summary
+
+- Verify Python-facing coverage from the repository root:
+  ```bash
+  pytest -q
+  ```
+- Verify the Rust server from `server/`:
+  ```bash
+  cargo test --all-features
+  ```
+- Main areas: `server/` contains the Rust indexing and JSON API server; `plugin/` contains the Python-packaged generator and Claude Code plugin assets; `tests/` covers root Python behavior; `server/tests/` holds Rust test fixtures; `benchmarks/load/` contains load benchmark scenarios, runner code, fixtures, and reports; `server/docs/` and `server/REPL_to_API.md` document server profiling and API usage. Project metadata and policies live in `pyproject.toml`, `CONTRIBUTING.md`, `SECURITY.md`, and `LICENSE`.
+
 ## Quick Start
 
 ### Prerequisites
