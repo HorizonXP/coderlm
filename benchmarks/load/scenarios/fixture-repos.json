@@ -1,0 +1,44 @@
+{
+  "scenario_id": "SCENARIO-03",
+  "name": "Fixture metadata and known query targets",
+  "workload_id": "fixture_metadata_smoke",
+  "agent_count": 2,
+  "project_count": 2,
+  "duration_seconds": 60,
+  "request_pacing": {
+    "mode": "fixed_rps",
+    "requests_per_second": 1.0
+  },
+  "fixture_id": "mixed-language-project",
+  "scenario_mix": [
+    {
+      "operation": "search_symbols",
+      "weight": 3
+    },
+    {
+      "operation": "read_implementation",
+      "weight": 2
+    },
+    {
+      "operation": "list_callers",
+      "weight": 2
+    },
+    {
+      "operation": "list_tests",
+      "weight": 1
+    },
+    {
+      "operation": "grep",
+      "weight": 1
+    }
+  ],
+  "server_options": {
+    "host": "127.0.0.1",
+    "port": 3000,
+    "reuse_existing": false
+  },
+  "cpu_profile_label": "wall-clock",
+  "output_dir": "benchmarks/load/reports/fixture-repos",
+  "readiness_timeout_seconds": 30,
+  "reliability_threshold": 0.99
+}

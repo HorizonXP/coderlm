@@ -8,10 +8,22 @@ import unittest
 from pathlib import Path
 
 from benchmarks.load.config import ConfigValidationError, ScenarioOverrides, load_scenario
+from benchmarks.load.fixtures_support import (
+    FixtureError,
+    append_to_known_file,
+    fixture_digest,
+    list_fixture_ids,
+    prepare_fixture_working_copy,
+    replace_in_known_file,
+    resolve_fixture,
+    touch_known_file,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 STARTER = ROOT / "benchmarks/load/scenarios/starter.json"
+FIXTURE_REPOS = ROOT / "benchmarks/load/scenarios/fixture-repos.json"
+WATCHER_MUTATION = ROOT / "benchmarks/load/scenarios/watcher-mutation.json"
 
 
 def write_scenario(tmp_path: Path, updates: dict) -> Path:
@@ -38,6 +50,8 @@ class LoadHarnessConfigTests(unittest.TestCase):
             },
         )
         self.assertEqual(normalized["fixture_id"], "starter-project")
+        self.assertEqual(normalized["fixture"]["fixture_id"], "starter-project")
+        self.assertIn("search_symbols", normalized["fixture"]["known_targets"])
         self.assertTrue(normalized["scenario_mix"])
         self.assertEqual(
             normalized["server_options"],
@@ -179,6 +193,98 @@ class LoadHarnessConfigTests(unittest.TestCase):
             load_scenario(STARTER, ScenarioOverrides(cpu_profile_label="impossible"))
 
         self.assertIn("invalid cpu_profile_label", str(exc.exception))
+
+    def test_fixture_scenario_metadata_documents_stable_fixture_ids(self) -> None:
+        self.assertEqual(
+            list_fixture_ids(),
+            ("mixed-language-project", "starter-project"),
+        )
+
+        fixture_scenario = load_scenario(FIXTURE_REPOS)
+        watcher_scenario = load_scenario(WATCHER_MUTATION)
+
+        self.assertEqual(fixture_scenario["scenario_id"], "SCENARIO-03")
+        self.assertEqual(fixture_scenario["fixture_id"], "mixed-language-project")
+        self.assertEqual(fixture_scenario["fixture"]["size_class"], "larger")
+        self.assertIn("rust", fixture_scenario["fixture"]["languages"])
+        self.assertIn("typescript", fixture_scenario["fixture"]["languages"])
+        self.assertIn("grep", fixture_scenario["fixture"]["known_targets"])
+
+        self.assertEqual(watcher_scenario["scenario_id"], "SCENARIO-04")
+        self.assertEqual(watcher_scenario["fixture_id"], "starter-project")
+        self.assertEqual(watcher_scenario["agent_count"], 4)
+        self.assertIn("watcher_mutation", watcher_scenario["fixture"]["known_targets"])
+
+    def test_fixture_metadata_resolves_known_targets_to_existing_files(self) -> None:
+        for fixture_id in list_fixture_ids():
+            with self.subTest(fixture_id=fixture_id):
+                metadata = resolve_fixture(fixture_id)
+
+                self.assertTrue(metadata.source_path.is_dir())
+                self.assertTrue(metadata.known_targets["structure"]["path"])
+                self.assertTrue(metadata.known_targets["search_symbols"]["symbol"])
+                self.assertTrue(metadata.known_targets["read_implementation"]["path"])
+                self.assertTrue(metadata.known_targets["list_callers"]["caller"])
+                self.assertTrue(metadata.known_targets["list_tests"]["path"])
+                self.assertTrue(metadata.known_targets["grep"]["pattern"])
+                self.assertTrue(metadata.known_targets["watcher_mutation"]["replace"])
+
+    def test_fixture_preparation_is_deterministic_and_mutates_only_working_copy(self) -> None:
+        tmp_dir = self.enterContext(_temporary_directory())
+        metadata = resolve_fixture("starter-project")
+        original_digest = fixture_digest(metadata.source_path)
+
+        first = prepare_fixture_working_copy("starter-project", tmp_dir, "first")
+        second = prepare_fixture_working_copy("starter-project", tmp_dir, "second")
+
+        self.assertEqual(fixture_digest(first.worktree_path), original_digest)
+        self.assertEqual(fixture_digest(second.worktree_path), original_digest)
+        self.assertEqual(
+            first.fixture.known_targets["watcher_mutation"],
+            second.fixture.known_targets["watcher_mutation"],
+        )
+
+        touched = touch_known_file(first)
+        appended = append_to_known_file(first, "\nmutation note\n")
+        replaced = replace_in_known_file(
+            first,
+            "starter-original-sentinel",
+            "starter-mutated-sentinel",
+        )
+
+        self.assertTrue(touched.is_relative_to(first.worktree_path))
+        self.assertTrue(appended.is_relative_to(first.worktree_path))
+        self.assertTrue(replaced.is_relative_to(first.worktree_path))
+        self.assertNotEqual(fixture_digest(first.worktree_path), original_digest)
+        self.assertEqual(fixture_digest(second.worktree_path), original_digest)
+        self.assertEqual(fixture_digest(metadata.source_path), original_digest)
+
+    def test_mutation_helper_rejects_missing_or_source_fixture_targets(self) -> None:
+        tmp_dir = self.enterContext(_temporary_directory())
+        metadata = resolve_fixture("starter-project")
+        prepared = prepare_fixture_working_copy("starter-project", tmp_dir, "mutable")
+        source_like = type(prepared)(
+            fixture=metadata,
+            worktree_path=metadata.source_path,
+        )
+
+        missing = prepared.path_for_target("touch")
+        missing.unlink()
+
+        with self.assertRaises(FixtureError) as missing_exc:
+            touch_known_file(prepared)
+        self.assertIn("cannot touch missing fixture file", str(missing_exc.exception))
+
+        with self.assertRaises(FixtureError) as source_exc:
+            append_to_known_file(source_like, "must not write")
+        self.assertIn(
+            "refusing to mutate checked-in fixture source",
+            str(source_exc.exception),
+        )
+        self.assertNotIn(
+            "must not write",
+            (metadata.source_path / "README.md").read_text(),
+        )
 
 
 class _temporary_directory:

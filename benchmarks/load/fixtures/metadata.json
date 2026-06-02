@@ -1,0 +1,76 @@
+{
+  "starter-project": {
+    "path": "starter-project",
+    "description": "Small Python fixture with deterministic symbols, callers, tests, grep targets, and watcher mutation files.",
+    "size_class": "small",
+    "languages": ["python"],
+    "excluded_generated_dirs": ["__pycache__", ".coderlm"],
+    "known_targets": {
+      "structure": {"path": "src/starter/math_ops.py"},
+      "search_symbols": {
+        "query": "compute_total",
+        "symbol": "compute_total",
+        "path": "src/starter/math_ops.py"
+      },
+      "read_implementation": {
+        "symbol": "compute_total",
+        "path": "src/starter/math_ops.py"
+      },
+      "list_callers": {
+        "symbol": "compute_total",
+        "caller": "summarize_invoice",
+        "path": "src/starter/math_ops.py"
+      },
+      "list_tests": {
+        "symbol": "compute_total",
+        "path": "tests/test_math_ops.py"
+      },
+      "grep": {
+        "pattern": "STARTER_GREP_TARGET",
+        "path": "src/starter/math_ops.py"
+      },
+      "watcher_mutation": {
+        "touch": "src/starter/math_ops.py",
+        "append": "README.md",
+        "replace": "src/starter/math_ops.py"
+      }
+    }
+  },
+  "mixed-language-project": {
+    "path": "mixed-language-project",
+    "description": "Deterministic mixed-language fixture for Rust, Python, TypeScript, JavaScript, and Go indexing workflows.",
+    "size_class": "larger",
+    "languages": ["rust", "python", "typescript", "javascript", "go"],
+    "excluded_generated_dirs": ["target", "node_modules", "__pycache__", ".coderlm"],
+    "known_targets": {
+      "structure": {"path": "rust/src/lib.rs"},
+      "search_symbols": {
+        "query": "orchestrate_report",
+        "symbol": "orchestrate_report",
+        "path": "python/analytics/pipeline.py"
+      },
+      "read_implementation": {
+        "symbol": "calculate_score",
+        "path": "rust/src/lib.rs"
+      },
+      "list_callers": {
+        "symbol": "formatMetric",
+        "caller": "renderDashboard",
+        "path": "typescript/src/dashboard.ts"
+      },
+      "list_tests": {
+        "symbol": "orchestrate_report",
+        "path": "python/tests/test_pipeline.py"
+      },
+      "grep": {
+        "pattern": "MIXED_GREP_TARGET",
+        "path": "javascript/src/worker.js"
+      },
+      "watcher_mutation": {
+        "touch": "python/analytics/pipeline.py",
+        "append": "README.md",
+        "replace": "typescript/src/dashboard.ts"
+      }
+    }
+  }
+}
