@@ -1,0 +1,58 @@
+services:
+  coderlm-server-2cpu:
+    profiles: ["cpu-2"]
+    build:
+      context: ../..
+      dockerfile: benchmarks/load/Dockerfile
+      target: server-runtime
+    command: ["/workspace/benchmarks/load/scenarios/compose-2cpu-smoke.json"]
+    cpus: 2.0
+    volumes:
+      - ./fixtures:/workspace/benchmarks/load/fixtures:ro
+      - ./scenarios:/workspace/benchmarks/load/scenarios:ro
+
+  load-runner-2cpu:
+    profiles: ["cpu-2"]
+    build:
+      context: ../..
+      dockerfile: benchmarks/load/Dockerfile
+      target: load-runner
+    command: ["/workspace/benchmarks/load/scenarios/compose-2cpu-smoke.json"]
+    depends_on:
+      - coderlm-server-2cpu
+    environment:
+      CODERLM_CPU_PROFILE_LABEL: 2cpu
+      COMPOSE_PROFILES: cpu-2
+    volumes:
+      - ./fixtures:/workspace/benchmarks/load/fixtures:ro
+      - ./scenarios:/workspace/benchmarks/load/scenarios:ro
+      - ./reports:/reports
+
+  coderlm-server-4cpu:
+    profiles: ["cpu-4"]
+    build:
+      context: ../..
+      dockerfile: benchmarks/load/Dockerfile
+      target: server-runtime
+    command: ["/workspace/benchmarks/load/scenarios/compose-4cpu-smoke.json"]
+    cpus: 4.0
+    volumes:
+      - ./fixtures:/workspace/benchmarks/load/fixtures:ro
+      - ./scenarios:/workspace/benchmarks/load/scenarios:ro
+
+  load-runner-4cpu:
+    profiles: ["cpu-4"]
+    build:
+      context: ../..
+      dockerfile: benchmarks/load/Dockerfile
+      target: load-runner
+    command: ["/workspace/benchmarks/load/scenarios/compose-4cpu-smoke.json"]
+    depends_on:
+      - coderlm-server-4cpu
+    environment:
+      CODERLM_CPU_PROFILE_LABEL: 4cpu
+      COMPOSE_PROFILES: cpu-4
+    volumes:
+      - ./fixtures:/workspace/benchmarks/load/fixtures:ro
+      - ./scenarios:/workspace/benchmarks/load/scenarios:ro
+      - ./reports:/reports
