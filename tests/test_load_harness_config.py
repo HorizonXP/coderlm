@@ -4,8 +4,11 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib import parse
 
 from benchmarks.load.config import ConfigValidationError, ScenarioOverrides, load_scenario
 from benchmarks.load.fixtures_support import (
@@ -18,12 +21,16 @@ from benchmarks.load.fixtures_support import (
     resolve_fixture,
     touch_known_file,
 )
+from benchmarks.load.runner.__main__ import HarnessError, run_scenario
 
 
 ROOT = Path(__file__).resolve().parents[1]
 STARTER = ROOT / "benchmarks/load/scenarios/starter.json"
 FIXTURE_REPOS = ROOT / "benchmarks/load/scenarios/fixture-repos.json"
 WATCHER_MUTATION = ROOT / "benchmarks/load/scenarios/watcher-mutation.json"
+COMPOSE_2CPU = ROOT / "benchmarks/load/scenarios/compose-2cpu-smoke.json"
+COMPOSE_4CPU = ROOT / "benchmarks/load/scenarios/compose-4cpu-smoke.json"
+COMPOSE_HEALTH_TIMEOUT = ROOT / "benchmarks/load/scenarios/compose-health-timeout.json"
 
 
 def write_scenario(tmp_path: Path, updates: dict) -> Path:
@@ -57,11 +64,17 @@ class LoadHarnessConfigTests(unittest.TestCase):
             normalized["server_options"],
             {
                 "host": "127.0.0.1",
+                "bind": "127.0.0.1",
                 "port": 3000,
+                "max_file_size": 1_000_000,
+                "max_projects": 5,
+                "watcher_enabled": True,
+                "log_level": "info",
                 "reuse_existing": False,
             },
         )
         self.assertEqual(normalized["cpu_profile_label"], "none")
+        self.assertEqual(normalized["cpu_profile"]["label"], "none")
         self.assertEqual(
             normalized["output_dir"],
             "benchmarks/load/reports/starter-smoke",
@@ -96,6 +109,7 @@ class LoadHarnessConfigTests(unittest.TestCase):
         self.assertEqual(normalized["duration_seconds"], 60)
         self.assertEqual(normalized["request_pacing"]["requests_per_second"], 1.0)
         self.assertEqual(normalized["server_options"]["port"], 3000)
+        self.assertTrue(normalized["server_options"]["watcher_enabled"])
 
     def test_invalid_values_return_actionable_errors(self) -> None:
         cases = [
@@ -112,6 +126,10 @@ class LoadHarnessConfigTests(unittest.TestCase):
             (
                 {"reliability_threshold": 1.5},
                 "reliability_threshold must be greater than 0",
+            ),
+            (
+                {"server_options": {"port": 70000}},
+                "server_options.port must be an integer between 1 and 65535",
             ),
         ]
 
@@ -193,6 +211,68 @@ class LoadHarnessConfigTests(unittest.TestCase):
             load_scenario(STARTER, ScenarioOverrides(cpu_profile_label="impossible"))
 
         self.assertIn("invalid cpu_profile_label", str(exc.exception))
+
+    def test_compose_cpu_profiles_normalize_metadata(self) -> None:
+        two_cpu = load_scenario(COMPOSE_2CPU)
+        four_cpu = load_scenario(COMPOSE_4CPU)
+
+        self.assertEqual(two_cpu["scenario_id"], "SCENARIO-05")
+        self.assertEqual(two_cpu["cpu_profile"]["label"], "2cpu")
+        self.assertEqual(two_cpu["cpu_profile"]["compose_profile"], "cpu-2")
+        self.assertEqual(two_cpu["cpu_profile"]["cpu_limit"], 2.0)
+        self.assertFalse(two_cpu["server_options"]["watcher_enabled"])
+
+        self.assertEqual(four_cpu["scenario_id"], "SCENARIO-05")
+        self.assertEqual(four_cpu["cpu_profile"]["label"], "4cpu")
+        self.assertEqual(four_cpu["cpu_profile"]["compose_profile"], "cpu-4")
+        self.assertEqual(four_cpu["cpu_profile"]["cpu_limit"], 4.0)
+
+        comparable_two = dict(two_cpu)
+        comparable_four = dict(four_cpu)
+        for key in ("name", "server_options", "cpu_profile_label", "output_dir", "report_path", "cpu_profile"):
+            comparable_two.pop(key)
+            comparable_four.pop(key)
+        self.assertEqual(comparable_two, comparable_four)
+
+    def test_runner_writes_report_for_core_api_workflow(self) -> None:
+        tmp_dir = self.enterContext(_temporary_directory())
+        server = self.enterContext(_fake_coderlm_server())
+        scenario_path = write_scenario(
+            tmp_dir,
+            {
+                "scenario_id": "SCENARIO-05",
+                "workload_id": "core_api_smoke",
+                "scenario_mix": [
+                    {"operation": "search_symbols", "weight": 1},
+                    {"operation": "read_implementation", "weight": 1},
+                    {"operation": "grep", "weight": 1},
+                ],
+                "server_options": {
+                    "host": "127.0.0.1",
+                    "port": server.port,
+                },
+                "cpu_profile_label": "2cpu",
+                "output_dir": str(tmp_dir / "reports"),
+                "readiness_timeout_seconds": 2,
+            },
+        )
+        config = load_scenario(scenario_path)
+
+        report = run_scenario(config)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["summary"]["request_errors"], 0)
+        self.assertEqual(report["scenario"]["cpu_profile"]["label"], "2cpu")
+        written = json.loads((tmp_dir / "reports/report.json").read_text(encoding="utf-8"))
+        self.assertEqual(written["server"]["session"]["session_id"], "session-1")
+
+    def test_health_timeout_exits_nonzero_with_actionable_error(self) -> None:
+        config = load_scenario(COMPOSE_HEALTH_TIMEOUT)
+
+        with self.assertRaises(HarnessError) as exc:
+            run_scenario(config)
+
+        self.assertIn("health endpoint unavailable", str(exc.exception))
 
     def test_fixture_scenario_metadata_documents_stable_fixture_ids(self) -> None:
         self.assertEqual(
@@ -294,3 +374,77 @@ class _temporary_directory:
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         self._manager.__exit__(exc_type, exc, traceback)
+
+
+class _fake_coderlm_server:
+    def __enter__(self) -> "_fake_coderlm_server":
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeCoderlmHandler)
+        self.port = self._server.server_address[1]
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=2)
+
+
+class _FakeCoderlmHandler(BaseHTTPRequestHandler):
+    project_path = ""
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def do_GET(self) -> None:
+        parsed = parse.urlparse(self.path)
+        query = parse.parse_qs(parsed.query)
+        if parsed.path == "/api/v1/health":
+            self._send({"status": "ok", "projects": 1, "active_sessions": 0})
+        elif parsed.path == "/api/v1/roots":
+            self._send(
+                {
+                    "roots": [
+                        {
+                            "path": self.project_path,
+                            "ready": True,
+                            "readiness": "ready",
+                        }
+                    ],
+                    "count": 1,
+                }
+            )
+        elif parsed.path == "/api/v1/symbols/search":
+            self._send({"symbols": [{"name": query["q"][0]}], "count": 1})
+        elif parsed.path == "/api/v1/symbols/implementation":
+            self._send({"source": "def compute_total():\n    return 1\n"})
+        elif parsed.path == "/api/v1/grep":
+            self._send({"matches": [{"line": 1}], "total_matches": 1})
+        elif parsed.path == "/api/v1/peek":
+            self._send({"lines": ["fixture line"]})
+        else:
+            self.send_error(404)
+
+    def do_POST(self) -> None:
+        if self.path != "/api/v1/sessions":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        body = json.loads(self.rfile.read(length).decode("utf-8"))
+        type(self).project_path = body["cwd"]
+        self._send(
+            {
+                "session_id": "session-1",
+                "created_at": "2026-06-02T00:00:00Z",
+                "project": body["cwd"],
+                "structure": {},
+            }
+        )
+
+    def _send(self, payload: dict) -> None:
+        content = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)

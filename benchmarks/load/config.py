@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,12 +17,20 @@ SCENARIOS_DIR = HARNESS_ROOT / "scenarios"
 FIXTURES_DIR = HARNESS_ROOT / "fixtures"
 REPORTS_DIR = HARNESS_ROOT / "reports"
 
-SUPPORTED_SCENARIO_IDS = {"SCENARIO-01", "SCENARIO-02", "SCENARIO-03", "SCENARIO-04"}
+SUPPORTED_SCENARIO_IDS = {
+    "SCENARIO-01",
+    "SCENARIO-02",
+    "SCENARIO-03",
+    "SCENARIO-04",
+    "SCENARIO-05",
+    "SCENARIO-06",
+}
 SUPPORTED_WORKLOADS = {
     "symbol_lookup_smoke",
     "mixed_read_smoke",
     "fixture_metadata_smoke",
     "watcher_mutation_prep",
+    "core_api_smoke",
 }
 SUPPORTED_OPERATIONS = {
     "grep",
@@ -34,7 +43,34 @@ SUPPORTED_OPERATIONS = {
     "append_file",
     "replace_file",
 }
-SUPPORTED_CPU_PROFILES = {"none", "wall-clock", "flamegraph"}
+CPU_PROFILES: dict[str, dict[str, Any]] = {
+    "none": {
+        "compose_profile": "default",
+        "cpu_limit": None,
+        "description": "No Compose CPU limit requested.",
+    },
+    "wall-clock": {
+        "compose_profile": "default",
+        "cpu_limit": None,
+        "description": "Legacy wall-clock profiling label without a CPU limit.",
+    },
+    "flamegraph": {
+        "compose_profile": "default",
+        "cpu_limit": None,
+        "description": "Legacy flamegraph profiling label without a CPU limit.",
+    },
+    "2cpu": {
+        "compose_profile": "cpu-2",
+        "cpu_limit": 2.0,
+        "description": "Compose CPU-constrained run targeting two CPUs.",
+    },
+    "4cpu": {
+        "compose_profile": "cpu-4",
+        "cpu_limit": 4.0,
+        "description": "Compose CPU-constrained run targeting four CPUs.",
+    },
+}
+SUPPORTED_CPU_PROFILES = set(CPU_PROFILES)
 SUPPORTED_PACING_MODES = {"fixed_rps"}
 
 DEFAULTS: dict[str, Any] = {
@@ -47,7 +83,12 @@ DEFAULTS: dict[str, Any] = {
     },
     "server_options": {
         "host": "127.0.0.1",
+        "bind": "127.0.0.1",
         "port": 3000,
+        "max_file_size": 1_000_000,
+        "max_projects": 5,
+        "watcher_enabled": True,
+        "log_level": "info",
         "reuse_existing": False,
     },
     "cpu_profile_label": "none",
@@ -82,6 +123,8 @@ class ScenarioOverrides:
     readiness_timeout_seconds: int | None = None
     reliability_threshold: float | None = None
     requests_per_second: float | None = None
+    server_host: str | None = None
+    server_port: int | None = None
 
     def as_updates(self) -> dict[str, Any]:
         updates: dict[str, Any] = {}
@@ -100,6 +143,10 @@ class ScenarioOverrides:
             updates.setdefault("request_pacing", {})[
                 "requests_per_second"
             ] = self.requests_per_second
+        if self.server_host is not None:
+            updates.setdefault("server_options", {})["host"] = self.server_host
+        if self.server_port is not None:
+            updates.setdefault("server_options", {})["port"] = self.server_port
         return updates
 
 
@@ -126,6 +173,7 @@ def load_scenario(path: Path, overrides: ScenarioOverrides | None = None) -> dic
 
     normalized["fixture"] = resolve_fixture(normalized["fixture_id"]).as_dict()
     normalized["report_path"] = str(Path(normalized["output_dir"]) / "report.json")
+    normalized["cpu_profile"] = _cpu_profile_metadata(normalized["cpu_profile_label"])
     return normalized
 
 
@@ -242,14 +290,47 @@ def _validate_server_options(value: Any, errors: list[str]) -> None:
         return
 
     host = value.get("host")
+    bind = value.get("bind")
     port = value.get("port")
+    max_file_size = value.get("max_file_size")
+    max_projects = value.get("max_projects")
+    watcher_enabled = value.get("watcher_enabled")
+    log_level = value.get("log_level")
     reuse_existing = value.get("reuse_existing")
     if not isinstance(host, str) or not host.strip():
         errors.append("server_options.host must be a non-empty string")
+    if not isinstance(bind, str) or not bind.strip():
+        errors.append("server_options.bind must be a non-empty string")
     if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
         errors.append("server_options.port must be an integer between 1 and 65535")
+    if (
+        not isinstance(max_file_size, int)
+        or isinstance(max_file_size, bool)
+        or max_file_size <= 0
+    ):
+        errors.append("server_options.max_file_size must be a positive integer")
+    if (
+        not isinstance(max_projects, int)
+        or isinstance(max_projects, bool)
+        or max_projects <= 0
+    ):
+        errors.append("server_options.max_projects must be a positive integer")
+    if not isinstance(watcher_enabled, bool):
+        errors.append("server_options.watcher_enabled must be a boolean")
+    if not isinstance(log_level, str) or not log_level.strip():
+        errors.append("server_options.log_level must be a non-empty string")
     if not isinstance(reuse_existing, bool):
         errors.append("server_options.reuse_existing must be a boolean")
+
+
+def _cpu_profile_metadata(label: str) -> dict[str, Any]:
+    profile = dict(CPU_PROFILES[label])
+    profile["label"] = label
+    profile["raw_environment"] = {
+        "CODERLM_CPU_PROFILE_LABEL": os.environ.get("CODERLM_CPU_PROFILE_LABEL"),
+        "COMPOSE_PROFILES": os.environ.get("COMPOSE_PROFILES"),
+    }
+    return profile
 
 
 def _validate_scenario_mix(value: Any, errors: list[str]) -> None:
