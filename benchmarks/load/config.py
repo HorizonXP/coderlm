@@ -24,6 +24,10 @@ SUPPORTED_SCENARIO_IDS = {
     "SCENARIO-04",
     "SCENARIO-05",
     "SCENARIO-06",
+    "SCENARIO-07",
+    "SCENARIO-08",
+    "SCENARIO-09",
+    "SCENARIO-10",
 }
 SUPPORTED_WORKLOADS = {
     "symbol_lookup_smoke",
@@ -33,6 +37,7 @@ SUPPORTED_WORKLOADS = {
     "core_api_smoke",
 }
 SUPPORTED_OPERATIONS = {
+    "structure",
     "grep",
     "search_symbols",
     "read_implementation",
