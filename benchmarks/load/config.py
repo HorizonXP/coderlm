@@ -89,6 +89,7 @@ SUPPORTED_ERROR_CLASSIFICATIONS = {
 }
 
 DEFAULTS: dict[str, Any] = {
+    "run_id": "local-run",
     "agent_count": 1,
     "project_count": 1,
     "duration_seconds": 60,
@@ -131,20 +132,25 @@ class ConfigValidationError(ValueError):
 
 @dataclass(frozen=True)
 class ScenarioOverrides:
+    run_id: str | None = None
     agent_count: int | None = None
+    project_count: int | None = None
     duration_seconds: int | None = None
     output_dir: str | None = None
     cpu_profile_label: str | None = None
     readiness_timeout_seconds: int | None = None
     reliability_threshold: float | None = None
     requests_per_second: float | None = None
+    think_time_seconds: float | None = None
     server_host: str | None = None
     server_port: int | None = None
 
     def as_updates(self) -> dict[str, Any]:
         updates: dict[str, Any] = {}
         for field in (
+            "run_id",
             "agent_count",
+            "project_count",
             "duration_seconds",
             "output_dir",
             "cpu_profile_label",
@@ -158,6 +164,10 @@ class ScenarioOverrides:
             updates.setdefault("request_pacing", {})[
                 "requests_per_second"
             ] = self.requests_per_second
+        if self.think_time_seconds is not None:
+            updates.setdefault("request_pacing", {})[
+                "think_time_seconds"
+            ] = self.think_time_seconds
         if self.server_host is not None:
             updates.setdefault("server_options", {})["host"] = self.server_host
         if self.server_port is not None:
@@ -213,6 +223,7 @@ def _validate(config: dict[str, Any]) -> list[str]:
     errors.extend(f"missing required field: {field}" for field in missing)
 
     _require_string(config, "scenario_id", errors)
+    _require_string(config, "run_id", errors)
     _require_string(config, "name", errors)
     _require_string(config, "workload_id", errors)
     _require_string(config, "fixture_id", errors)

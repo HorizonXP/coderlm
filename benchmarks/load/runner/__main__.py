@@ -38,12 +38,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate and normalize config without starting any load workload.",
     )
     parser.add_argument("--agents", type=int, dest="agent_count")
+    parser.add_argument("--projects", type=int, dest="project_count")
     parser.add_argument("--duration-seconds", type=int)
     parser.add_argument("--output-dir")
     parser.add_argument("--cpu-profile-label")
     parser.add_argument("--readiness-timeout-seconds", type=int)
     parser.add_argument("--reliability-threshold", type=float)
     parser.add_argument("--request-rate", type=float, dest="requests_per_second")
+    parser.add_argument("--think-time-seconds", type=float)
+    parser.add_argument("--run-id")
     parser.add_argument("--server-host")
     parser.add_argument("--server-port", type=int)
     return parser
@@ -53,13 +56,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     overrides = ScenarioOverrides(
+        run_id=args.run_id,
         agent_count=args.agent_count,
+        project_count=args.project_count,
         duration_seconds=args.duration_seconds,
         output_dir=args.output_dir,
         cpu_profile_label=args.cpu_profile_label,
         readiness_timeout_seconds=args.readiness_timeout_seconds,
         reliability_threshold=args.reliability_threshold,
         requests_per_second=args.requests_per_second,
+        think_time_seconds=args.think_time_seconds,
         server_host=args.server_host,
         server_port=args.server_port,
     )
@@ -108,6 +114,7 @@ def run_scenario(config: dict[str, Any]) -> dict[str, Any]:
     report = {
         "ok": not failed and error_rate <= allowed_error_rate,
         "scenario": config,
+        "run_id": config["run_id"],
         "server": {
             "base_url": base_url,
             "health": health,
@@ -242,6 +249,8 @@ def _worker_context(config: dict[str, Any], agent_session: Any) -> Any:
         project_id=agent_session.project_id,
         session_id=agent_session.session.session_id,
         project_root=agent_session.session.project_root,
+        run_id=config["run_id"],
+        worker_id=agent_session.agent_id,
     )
 
 

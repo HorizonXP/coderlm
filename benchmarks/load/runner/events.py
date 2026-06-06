@@ -22,6 +22,8 @@ class OperationContext:
     project_id: str
     session_id: str
     project_root: str
+    run_id: str = "local-run"
+    worker_id: str | None = None
 
 
 def begin_operation() -> float:
@@ -118,9 +120,11 @@ def _base_event(
 ) -> dict[str, Any]:
     event = {
         "operation": operation,
+        "run_id": context.run_id,
         "scenario_id": context.scenario_id,
         "fixture_id": context.fixture_id,
         "agent_id": context.agent_id,
+        "worker_id": context.worker_id or context.agent_id,
         "project_id": context.project_id,
         "session_id": context.session_id,
         "project_root": context.project_root,

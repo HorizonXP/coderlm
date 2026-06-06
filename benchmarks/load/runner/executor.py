@@ -110,6 +110,8 @@ def run_agent_operations(
         project_id=agent_session.project_id,
         session_id=agent_session.session.session_id,
         project_root=agent_session.session.project_root,
+        run_id=config["run_id"],
+        worker_id=agent_session.agent_id,
     )
     operation_plan = _weighted_operation_plan(config["scenario_mix"])
     pacing = _pacing_plan(config)

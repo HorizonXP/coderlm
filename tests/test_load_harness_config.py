@@ -56,6 +56,7 @@ class LoadHarnessConfigTests(unittest.TestCase):
         normalized = load_scenario(STARTER)
 
         self.assertEqual(normalized["scenario_id"], "SCENARIO-01")
+        self.assertEqual(normalized["run_id"], "local-run")
         self.assertEqual(normalized["agent_count"], 2)
         self.assertEqual(normalized["project_count"], 1)
         self.assertEqual(normalized["duration_seconds"], 60)
@@ -173,8 +174,14 @@ class LoadHarnessConfigTests(unittest.TestCase):
                 "--validate-only",
                 "--agents",
                 "4",
+                "--projects",
+                "3",
                 "--request-rate",
                 "2.25",
+                "--think-time-seconds",
+                "0.5",
+                "--run-id",
+                "ci-scenario-08",
                 "--output-dir",
                 "benchmarks/load/reports/override-run",
                 str(STARTER),
@@ -188,7 +195,10 @@ class LoadHarnessConfigTests(unittest.TestCase):
         normalized = json.loads(result.stdout)
 
         self.assertEqual(normalized["agent_count"], 4)
+        self.assertEqual(normalized["project_count"], 3)
+        self.assertEqual(normalized["run_id"], "ci-scenario-08")
         self.assertEqual(normalized["request_pacing"]["requests_per_second"], 2.25)
+        self.assertEqual(normalized["request_pacing"]["think_time_seconds"], 0.5)
         self.assertEqual(
             normalized["report_path"],
             "benchmarks/load/reports/override-run/report.json",
@@ -281,8 +291,11 @@ class LoadHarnessConfigTests(unittest.TestCase):
         written = json.loads((tmp_dir / "reports/report.json").read_text(encoding="utf-8"))
         self.assertEqual(written["server"]["session"]["session_id"], "session-1")
         self.assertEqual(len(written["server"]["sessions"]), 2)
+        self.assertEqual(written["run_id"], "local-run")
+        self.assertEqual(written["operations"][0]["run_id"], "local-run")
         self.assertEqual(written["operations"][0]["scenario_id"], "SCENARIO-05")
         self.assertEqual(written["operations"][0]["fixture_id"], "starter-project")
+        self.assertEqual(written["operations"][0]["worker_id"], "agent-1")
         self.assertEqual(written["operations"][0]["status"], "success")
 
     def test_executor_paces_weighted_operations_without_mutating_mix(self) -> None:
@@ -596,7 +609,9 @@ class LoadHarnessConfigTests(unittest.TestCase):
         self.assertTrue(event["ok"])
         self.assertEqual(event["status"], "success")
         self.assertEqual(event["scenario_id"], "SCENARIO-08")
+        self.assertEqual(event["run_id"], "local-run")
         self.assertEqual(event["agent_id"], "agent-2")
+        self.assertEqual(event["worker_id"], "agent-2")
         self.assertEqual(event["response_summary"], {"total_matches": 3})
 
     def test_success_event_ignores_malformed_count_summary(self) -> None:
