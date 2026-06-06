@@ -7,13 +7,14 @@ import concurrent.futures
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 from benchmarks.load.config import ConfigValidationError, ScenarioOverrides, load_scenario
 from benchmarks.load.runner.client import CodeRLMClient, CodeRLMClientError
-from benchmarks.load.runner.events import UNSUPPORTED, classify_error
+from benchmarks.load.runner.events import UNSUPPORTED, classify_error, error_event
 from benchmarks.load.runner.executor import create_agent_sessions, run_agent_operations
 
 
@@ -98,12 +99,9 @@ def run_scenario(config: dict[str, Any]) -> dict[str, Any]:
     operations = _run_agent_batches(client, config, agent_sessions)
 
     total = len(operations)
-    failed = [
-        operation
-        for operation in operations
-        if not operation["ok"] and operation["status"] != UNSUPPORTED
-    ]
+    failed = [operation for operation in operations if _is_unexpected_failure(operation)]
     unsupported = [operation for operation in operations if operation["status"] == UNSUPPORTED]
+    expected_errors = [operation for operation in operations if operation.get("expected_error")]
     error_rate = len(failed) / total if total else 0.0
     allowed_error_rate = 1.0 - config["reliability_threshold"]
 
@@ -121,6 +119,7 @@ def run_scenario(config: dict[str, Any]) -> dict[str, Any]:
         "summary": {
             "total_requests": total,
             "request_errors": len(failed),
+            "expected_errors": len(expected_errors),
             "unsupported_requests": len(unsupported),
             "error_rate": error_rate,
             "allowed_error_rate": allowed_error_rate,
@@ -145,23 +144,58 @@ def _run_agent_batches(
     config: dict[str, Any],
     agent_sessions: list,
 ) -> list[dict[str, Any]]:
+    cancel_event = threading.Event()
     if len(agent_sessions) <= 1:
         return [
             event
             for agent_session in agent_sessions
-            for event in run_agent_operations(client, config, agent_session)
+            for event in run_agent_operations(
+                client,
+                config,
+                agent_session,
+                cancel_event=cancel_event,
+            )
         ]
 
     operations: list[dict[str, Any]] = []
     max_workers = min(len(agent_sessions), config["agent_count"])
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(run_agent_operations, client, config, agent_session)
+        futures = {
+            executor.submit(
+                run_agent_operations,
+                client,
+                config,
+                agent_session,
+                cancel_event=cancel_event,
+            ): agent_session
             for agent_session in agent_sessions
-        ]
+        }
         for future in concurrent.futures.as_completed(futures):
-            operations.extend(future.result())
-    return operations
+            agent_session = futures[future]
+            try:
+                worker_events = future.result()
+            except Exception as exc:
+                cancel_event.set()
+                worker_events = [
+                    error_event(
+                        "worker",
+                        _worker_context(config, agent_session),
+                        time.monotonic(),
+                        exc,
+                    )
+                ]
+            operations.extend(worker_events)
+            if any(_is_unexpected_failure(operation) for operation in worker_events):
+                cancel_event.set()
+    return sorted(
+        operations,
+        key=lambda event: (
+            event["project_id"],
+            event["agent_id"],
+            event.get("sequence", -1),
+            event["started_at_monotonic"],
+        ),
+    )
 
 
 def _server_base_url(config: dict[str, Any]) -> str:
@@ -187,6 +221,27 @@ def _poll_health(client: CodeRLMClient, timeout_seconds: int) -> dict[str, Any]:
     raise HarnessError(
         f"health endpoint unavailable after {timeout_seconds}s at "
         f"{client.base_url}/api/v1/health: {last_error}"
+    )
+
+
+def _is_unexpected_failure(operation: dict[str, Any]) -> bool:
+    return (
+        not operation["ok"]
+        and operation["status"] != UNSUPPORTED
+        and not operation.get("expected_error", False)
+    )
+
+
+def _worker_context(config: dict[str, Any], agent_session: Any) -> Any:
+    from benchmarks.load.runner.events import OperationContext
+
+    return OperationContext(
+        scenario_id=config["scenario_id"],
+        fixture_id=config["fixture_id"],
+        agent_id=agent_session.agent_id,
+        project_id=agent_session.project_id,
+        session_id=agent_session.session.session_id,
+        project_root=agent_session.session.project_root,
     )
 
 

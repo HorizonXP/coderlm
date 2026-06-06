@@ -23,6 +23,7 @@ from benchmarks.load.fixtures_support import (
     touch_known_file,
 )
 from benchmarks.load.runner.__main__ import HarnessError, run_scenario
+from benchmarks.load.runner.__main__ import _run_agent_batches
 from benchmarks.load.runner.client import CodeRLMClient, CodeRLMSession, ReadinessTimeout
 from benchmarks.load.runner.events import (
     OperationContext,
@@ -30,7 +31,7 @@ from benchmarks.load.runner.events import (
     error_event,
     success_event,
 )
-from benchmarks.load.runner.executor import run_operation
+from benchmarks.load.runner.executor import AgentSession, run_agent_operations, run_operation
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -263,6 +264,11 @@ class LoadHarnessConfigTests(unittest.TestCase):
                 "cpu_profile_label": "2cpu",
                 "output_dir": str(tmp_dir / "reports"),
                 "readiness_timeout_seconds": 2,
+                "duration_seconds": 1,
+                "request_pacing": {
+                    "mode": "fixed_rps",
+                    "requests_per_second": 3.0,
+                },
             },
         )
         config = load_scenario(scenario_path)
@@ -278,6 +284,183 @@ class LoadHarnessConfigTests(unittest.TestCase):
         self.assertEqual(written["operations"][0]["scenario_id"], "SCENARIO-05")
         self.assertEqual(written["operations"][0]["fixture_id"], "starter-project")
         self.assertEqual(written["operations"][0]["status"], "success")
+
+    def test_executor_paces_weighted_operations_without_mutating_mix(self) -> None:
+        tmp_dir = self.enterContext(_temporary_directory())
+        prepared = prepare_fixture_working_copy("starter-project", tmp_dir, "paced")
+        session = CodeRLMSession(
+            session_id="session-paced",
+            project_root=str(prepared.worktree_path),
+            raw={"session_id": "session-paced", "project": str(prepared.worktree_path)},
+        )
+        agent_session = AgentSession(
+            agent_id="agent-1",
+            project_id="project-1",
+            prepared_fixture=prepared,
+            session=session,
+            readiness={"ready": True},
+        )
+        config = load_scenario(
+            write_scenario(
+                tmp_dir,
+                {
+                    "scenario_id": "SCENARIO-08",
+                    "scenario_mix": [
+                        {"operation": "structure", "weight": 2},
+                        {"operation": "grep", "weight": 1},
+                    ],
+                    "duration_seconds": 3,
+                    "request_pacing": {
+                        "mode": "fixed_rps",
+                        "requests_per_second": 2.0,
+                        "think_time_seconds": 0.75,
+                    },
+                    "output_dir": str(tmp_dir / "reports"),
+                },
+            )
+        )
+        clock = _FakeClock()
+        observed_starts: list[float] = []
+
+        def fake_run_operation(*args: object, **kwargs: object) -> dict:
+            observed_starts.append(round(clock.now, 1))
+            return {"count": 1}
+
+        with mock.patch(
+            "benchmarks.load.runner.executor.run_operation",
+            side_effect=fake_run_operation,
+        ):
+            events = run_agent_operations(
+                CodeRLMClient("http://127.0.0.1:1"),
+                config,
+                agent_session,
+                monotonic=clock.monotonic,
+                sleep=clock.sleep,
+            )
+
+        self.assertEqual(
+            [event["operation"] for event in events],
+            ["structure", "structure", "grep", "structure"],
+        )
+        self.assertEqual([event["sequence"] for event in events], list(range(4)))
+        self.assertEqual(observed_starts, [0.0, 0.8, 1.5, 2.2])
+
+    def test_runner_fans_out_agents_across_multiple_projects(self) -> None:
+        tmp_dir = self.enterContext(_temporary_directory())
+        server = self.enterContext(_fake_coderlm_server())
+        config = load_scenario(
+            write_scenario(
+                tmp_dir,
+                {
+                    "scenario_id": "SCENARIO-08",
+                    "workload_id": "core_api_smoke",
+                    "agent_count": 3,
+                    "project_count": 2,
+                    "duration_seconds": 1,
+                    "request_pacing": {
+                        "mode": "fixed_rps",
+                        "requests_per_second": 2.0,
+                    },
+                    "scenario_mix": [{"operation": "structure", "weight": 1}],
+                    "server_options": {"host": "127.0.0.1", "port": server.port},
+                    "output_dir": str(tmp_dir / "reports"),
+                    "readiness_timeout_seconds": 2,
+                },
+            )
+        )
+
+        report = run_scenario(config)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["summary"]["total_requests"], 6)
+        self.assertEqual(
+            {operation["agent_id"] for operation in report["operations"]},
+            {"agent-1", "agent-2", "agent-3"},
+        )
+        self.assertEqual(
+            {operation["project_id"] for operation in report["operations"]},
+            {"project-1", "project-2"},
+        )
+
+    def test_worker_exception_is_reported_as_partial_event_and_cancels_batch(self) -> None:
+        tmp_dir = self.enterContext(_temporary_directory())
+        prepared = prepare_fixture_working_copy("starter-project", tmp_dir, "cancel")
+        sessions = [
+            AgentSession(
+                agent_id=f"agent-{index}",
+                project_id="project-1",
+                prepared_fixture=prepared,
+                session=CodeRLMSession(
+                    session_id=f"session-{index}",
+                    project_root=str(prepared.worktree_path),
+                    raw={"session_id": f"session-{index}", "project": str(prepared.worktree_path)},
+                ),
+                readiness={"ready": True},
+            )
+            for index in (1, 2)
+        ]
+        config = load_scenario(
+            write_scenario(
+                tmp_dir,
+                {
+                    "scenario_id": "SCENARIO-08",
+                    "agent_count": 2,
+                    "duration_seconds": 1,
+                    "scenario_mix": [{"operation": "structure", "weight": 1}],
+                    "output_dir": str(tmp_dir / "reports"),
+                },
+            )
+        )
+
+        def fake_run_agent_operations(*args: object, **kwargs: object) -> list[dict]:
+            cancel_event = kwargs["cancel_event"]
+            agent_session = args[2]
+            if agent_session.agent_id == "agent-1":
+                raise RuntimeError("worker exploded")
+            while not cancel_event.is_set():
+                time.sleep(0.01)
+            return []
+
+        with mock.patch(
+            "benchmarks.load.runner.__main__.run_agent_operations",
+            side_effect=fake_run_agent_operations,
+        ):
+            events = _run_agent_batches(CodeRLMClient("http://127.0.0.1:1"), config, sessions)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["operation"], "worker")
+        self.assertEqual(events[0]["error_classification"], "runner_error")
+
+    def test_expected_error_classification_does_not_fail_report(self) -> None:
+        tmp_dir = self.enterContext(_temporary_directory())
+        server = self.enterContext(_fake_coderlm_server(gone_paths={"/api/v1/structure"}))
+        config = load_scenario(
+            write_scenario(
+                tmp_dir,
+                {
+                    "scenario_id": "SCENARIO-09",
+                    "workload_id": "core_api_smoke",
+                    "agent_count": 1,
+                    "duration_seconds": 1,
+                    "scenario_mix": [
+                        {
+                            "operation": "structure",
+                            "weight": 1,
+                            "expected_error_classifications": ["project_gone"],
+                        }
+                    ],
+                    "server_options": {"host": "127.0.0.1", "port": server.port},
+                    "output_dir": str(tmp_dir / "reports"),
+                    "readiness_timeout_seconds": 2,
+                },
+            )
+        )
+
+        report = run_scenario(config)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["summary"]["expected_errors"], 1)
+        self.assertTrue(report["operations"][0]["expected_error"])
 
     def test_client_constructs_session_header_and_query_request(self) -> None:
         server = self.enterContext(_fake_coderlm_server())
@@ -551,17 +734,38 @@ class _temporary_directory:
         self._manager.__exit__(exc_type, exc, traceback)
 
 
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class _fake_coderlm_server:
-    def __init__(self, *, ready: bool = True, non_object_path: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        ready: bool = True,
+        non_object_path: str | None = None,
+        gone_paths: set[str] | None = None,
+    ) -> None:
         self.ready = ready
         self.non_object_path = non_object_path
+        self.gone_paths = gone_paths or set()
 
     def __enter__(self) -> "_fake_coderlm_server":
         _FakeCoderlmHandler.ready = self.ready
         _FakeCoderlmHandler.non_object_path = self.non_object_path
+        _FakeCoderlmHandler.gone_paths = self.gone_paths
         _FakeCoderlmHandler.last_path = ""
         _FakeCoderlmHandler.last_query = {}
         _FakeCoderlmHandler.last_session_header = None
+        _FakeCoderlmHandler.project_paths = []
+        _FakeCoderlmHandler.session_count = 0
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeCoderlmHandler)
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -575,9 +779,11 @@ class _fake_coderlm_server:
 
 
 class _FakeCoderlmHandler(BaseHTTPRequestHandler):
-    project_path = ""
+    project_paths: list[str] = []
+    session_count = 0
     ready = True
     non_object_path: str | None = None
+    gone_paths: set[str] = set()
     last_path = ""
     last_query: dict[str, list[str]] = {}
     last_session_header: str | None = None
@@ -591,7 +797,9 @@ class _FakeCoderlmHandler(BaseHTTPRequestHandler):
         type(self).last_path = parsed.path
         type(self).last_query = query
         type(self).last_session_header = self.headers.get("X-Session-Id")
-        if parsed.path == self.non_object_path:
+        if parsed.path in self.gone_paths:
+            self._send({"error": "project gone"}, status=410)
+        elif parsed.path == self.non_object_path:
             self._send(["not", "an", "object"])
         elif parsed.path == "/api/v1/health":
             self._send({"status": "ok", "projects": 1, "active_sessions": 0})
@@ -600,12 +808,13 @@ class _FakeCoderlmHandler(BaseHTTPRequestHandler):
                 {
                     "roots": [
                         {
-                            "path": self.project_path,
+                            "path": project_path,
                             "ready": self.ready,
                             "readiness": "ready" if self.ready else "indexing",
                         }
+                        for project_path in self.project_paths
                     ],
-                    "count": 1,
+                    "count": len(self.project_paths),
                 }
             )
         elif parsed.path == "/api/v1/structure":
@@ -627,19 +836,22 @@ class _FakeCoderlmHandler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length).decode("utf-8"))
-        type(self).project_path = body["cwd"]
+        if body["cwd"] not in type(self).project_paths:
+            type(self).project_paths.append(body["cwd"])
+        type(self).session_count += 1
+        session_id = f"session-{type(self).session_count}"
         self._send(
             {
-                "session_id": "session-1",
+                "session_id": session_id,
                 "created_at": "2026-06-02T00:00:00Z",
                 "project": body["cwd"],
                 "structure": {},
             }
         )
 
-    def _send(self, payload: object) -> None:
+    def _send(self, payload: object, *, status: int = 200) -> None:
         content = json.dumps(payload).encode("utf-8")
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()

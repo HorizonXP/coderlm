@@ -33,11 +33,14 @@ def success_event(
     context: OperationContext,
     started_at: float,
     response: dict[str, Any],
+    *,
+    sequence: int | None = None,
 ) -> dict[str, Any]:
     ended_at = time.monotonic()
-    return _base_event(operation, context, started_at, ended_at) | {
+    return _base_event(operation, context, started_at, ended_at, sequence=sequence) | {
         "status": SUCCESS,
         "ok": True,
+        "expected_error": False,
         "error_classification": None,
         "error": None,
         "response_summary": response_summary(operation, response),
@@ -49,12 +52,17 @@ def error_event(
     context: OperationContext,
     started_at: float,
     exc: BaseException,
+    *,
+    sequence: int | None = None,
+    expected_classifications: set[str] | None = None,
 ) -> dict[str, Any]:
     ended_at = time.monotonic()
     classification = classify_error(exc)
-    return _base_event(operation, context, started_at, ended_at) | {
+    expected = classification in (expected_classifications or set())
+    return _base_event(operation, context, started_at, ended_at, sequence=sequence) | {
         "status": UNSUPPORTED if classification == "unsupported_operation_target" else ERROR,
-        "ok": False,
+        "ok": expected,
+        "expected_error": expected,
         "error_classification": classification,
         "error": str(exc),
         "response_summary": None,
@@ -105,8 +113,10 @@ def _base_event(
     context: OperationContext,
     started_at: float,
     ended_at: float,
+    *,
+    sequence: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    event = {
         "operation": operation,
         "scenario_id": context.scenario_id,
         "fixture_id": context.fixture_id,
@@ -118,3 +128,6 @@ def _base_event(
         "ended_at_monotonic": round(ended_at, 6),
         "elapsed_seconds": round(ended_at - started_at, 6),
     }
+    if sequence is not None:
+        event["sequence"] = sequence
+    return event

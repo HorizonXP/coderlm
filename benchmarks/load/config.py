@@ -77,6 +77,16 @@ CPU_PROFILES: dict[str, dict[str, Any]] = {
 }
 SUPPORTED_CPU_PROFILES = set(CPU_PROFILES)
 SUPPORTED_PACING_MODES = {"fixed_rps"}
+SUPPORTED_ERROR_CLASSIFICATIONS = {
+    "bad_request",
+    "http_error",
+    "not_found",
+    "project_gone",
+    "readiness_timeout",
+    "runner_error",
+    "transport_error",
+    "unsupported_operation_target",
+}
 
 DEFAULTS: dict[str, Any] = {
     "agent_count": 1,
@@ -287,6 +297,13 @@ def _validate_pacing(value: Any, errors: list[str]) -> None:
         or requests_per_second <= 0
     ):
         errors.append("request_pacing.requests_per_second must be a positive number")
+    think_time = value.get("think_time_seconds", 0)
+    if (
+        not isinstance(think_time, (int, float))
+        or isinstance(think_time, bool)
+        or think_time < 0
+    ):
+        errors.append("request_pacing.think_time_seconds must be a non-negative number")
 
 
 def _validate_server_options(value: Any, errors: list[str]) -> None:
@@ -362,6 +379,22 @@ def _validate_scenario_mix(value: Any, errors: list[str]) -> None:
             errors.append(f"{prefix}.weight must be a positive integer")
         else:
             weight_total += weight
+
+        expected = entry.get("expected_error_classifications", [])
+        if not isinstance(expected, list):
+            errors.append(f"{prefix}.expected_error_classifications must be a list")
+        else:
+            invalid = [
+                item
+                for item in expected
+                if not isinstance(item, str) or item not in SUPPORTED_ERROR_CLASSIFICATIONS
+            ]
+            if invalid:
+                errors.append(
+                    f"{prefix}.expected_error_classifications contains unsupported "
+                    f"values: {invalid}; expected one of "
+                    f"{sorted(SUPPORTED_ERROR_CLASSIFICATIONS)}"
+                )
 
     if weight_total <= 0:
         errors.append("scenario_mix must include at least one positive weight")
