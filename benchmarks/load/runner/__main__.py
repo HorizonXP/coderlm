@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import sys
@@ -12,7 +13,7 @@ from typing import Any
 
 from benchmarks.load.config import ConfigValidationError, ScenarioOverrides, load_scenario
 from benchmarks.load.runner.client import CodeRLMClient, CodeRLMClientError
-from benchmarks.load.runner.events import classify_error
+from benchmarks.load.runner.events import UNSUPPORTED, classify_error
 from benchmarks.load.runner.executor import create_agent_sessions, run_agent_operations
 
 
@@ -94,14 +95,15 @@ def run_scenario(config: dict[str, Any]) -> dict[str, Any]:
     client = CodeRLMClient(base_url)
     health = _poll_health(client, timeout)
     agent_sessions = create_agent_sessions(client, config)
-    operations = [
-        event
-        for agent_session in agent_sessions
-        for event in run_agent_operations(client, config, agent_session)
-    ]
+    operations = _run_agent_batches(client, config, agent_sessions)
 
     total = len(operations)
-    failed = [operation for operation in operations if not operation["ok"]]
+    failed = [
+        operation
+        for operation in operations
+        if not operation["ok"] and operation["status"] != UNSUPPORTED
+    ]
+    unsupported = [operation for operation in operations if operation["status"] == UNSUPPORTED]
     error_rate = len(failed) / total if total else 0.0
     allowed_error_rate = 1.0 - config["reliability_threshold"]
 
@@ -119,6 +121,7 @@ def run_scenario(config: dict[str, Any]) -> dict[str, Any]:
         "summary": {
             "total_requests": total,
             "request_errors": len(failed),
+            "unsupported_requests": len(unsupported),
             "error_rate": error_rate,
             "allowed_error_rate": allowed_error_rate,
         },
@@ -135,6 +138,30 @@ def run_scenario(config: dict[str, Any]) -> dict[str, Any]:
             f"{error_rate:.4f} > {allowed_error_rate:.4f}"
         )
     return report
+
+
+def _run_agent_batches(
+    client: CodeRLMClient,
+    config: dict[str, Any],
+    agent_sessions: list,
+) -> list[dict[str, Any]]:
+    if len(agent_sessions) <= 1:
+        return [
+            event
+            for agent_session in agent_sessions
+            for event in run_agent_operations(client, config, agent_session)
+        ]
+
+    operations: list[dict[str, Any]] = []
+    max_workers = min(len(agent_sessions), config["agent_count"])
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(run_agent_operations, client, config, agent_session)
+            for agent_session in agent_sessions
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            operations.extend(future.result())
+    return operations
 
 
 def _server_base_url(config: dict[str, Any]) -> str:

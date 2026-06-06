@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib import parse
@@ -296,6 +297,15 @@ class LoadHarnessConfigTests(unittest.TestCase):
             {"q": ["compute_total"], "limit": ["20"]},
         )
 
+    def test_client_rejects_relative_paths_and_non_object_json(self) -> None:
+        server = self.enterContext(_fake_coderlm_server(non_object_path="/api/v1/health"))
+        client = CodeRLMClient(f"http://127.0.0.1:{server.port}")
+
+        with self.assertRaisesRegex(Exception, "must start with '/'"):
+            client.get("api/v1/health")
+        with self.assertRaisesRegex(Exception, "non-object JSON"):
+            client.health()
+
     def test_readiness_timeout_is_explicitly_classified(self) -> None:
         server = self.enterContext(_fake_coderlm_server(ready=False))
         client = CodeRLMClient(f"http://127.0.0.1:{server.port}")
@@ -341,6 +351,53 @@ class LoadHarnessConfigTests(unittest.TestCase):
             "unsupported_operation_target",
         )
 
+    def test_runner_records_unsupported_targets_without_failing_report(self) -> None:
+        tmp_dir = self.enterContext(_temporary_directory())
+        server = self.enterContext(_fake_coderlm_server())
+        scenario_path = write_scenario(
+            tmp_dir,
+            {
+                "scenario_id": "SCENARIO-07",
+                "workload_id": "core_api_smoke",
+                "scenario_mix": [{"operation": "list_tests", "weight": 1}],
+                "server_options": {"host": "127.0.0.1", "port": server.port},
+                "output_dir": str(tmp_dir / "reports"),
+                "readiness_timeout_seconds": 2,
+            },
+        )
+        config = load_scenario(scenario_path)
+
+        unsupported_event = {
+            "operation": "list_tests",
+            "scenario_id": "SCENARIO-07",
+            "fixture_id": "starter-project",
+            "agent_id": "agent-1",
+            "project_id": "project-1",
+            "session_id": "session-1",
+            "project_root": "/fixture",
+            "started_at_monotonic": 1.0,
+            "ended_at_monotonic": 1.1,
+            "elapsed_seconds": 0.1,
+            "status": "unsupported",
+            "ok": False,
+            "error_classification": "unsupported_operation_target",
+            "error": "missing target",
+            "response_summary": None,
+        }
+        with (
+            mock.patch("benchmarks.load.runner.__main__.create_agent_sessions", return_value=[]),
+            mock.patch(
+                "benchmarks.load.runner.__main__._run_agent_batches",
+                return_value=[unsupported_event],
+            ),
+        ):
+            report = run_scenario(config)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["summary"]["request_errors"], 0)
+        self.assertEqual(report["summary"]["unsupported_requests"], 1)
+        self.assertEqual(report["operations"][0]["status"], "unsupported")
+
     def test_success_event_normalizes_identity_and_response_summary(self) -> None:
         context = OperationContext(
             scenario_id="SCENARIO-08",
@@ -358,6 +415,20 @@ class LoadHarnessConfigTests(unittest.TestCase):
         self.assertEqual(event["scenario_id"], "SCENARIO-08")
         self.assertEqual(event["agent_id"], "agent-2")
         self.assertEqual(event["response_summary"], {"total_matches": 3})
+
+    def test_success_event_ignores_malformed_count_summary(self) -> None:
+        context = OperationContext(
+            scenario_id="SCENARIO-08",
+            fixture_id="starter-project",
+            agent_id="agent-2",
+            project_id="project-1",
+            session_id="session-2",
+            project_root="/fixture",
+        )
+
+        event = success_event("search_symbols", context, 1.0, {"count": "one", "symbols": []})
+
+        self.assertEqual(event["response_summary"], {"keys": ["count", "symbols"]})
 
     def test_missing_fixture_target_is_classified_without_http_request(self) -> None:
         client = CodeRLMClient("http://127.0.0.1:1")
@@ -481,11 +552,13 @@ class _temporary_directory:
 
 
 class _fake_coderlm_server:
-    def __init__(self, *, ready: bool = True) -> None:
+    def __init__(self, *, ready: bool = True, non_object_path: str | None = None) -> None:
         self.ready = ready
+        self.non_object_path = non_object_path
 
     def __enter__(self) -> "_fake_coderlm_server":
         _FakeCoderlmHandler.ready = self.ready
+        _FakeCoderlmHandler.non_object_path = self.non_object_path
         _FakeCoderlmHandler.last_path = ""
         _FakeCoderlmHandler.last_query = {}
         _FakeCoderlmHandler.last_session_header = None
@@ -504,6 +577,7 @@ class _fake_coderlm_server:
 class _FakeCoderlmHandler(BaseHTTPRequestHandler):
     project_path = ""
     ready = True
+    non_object_path: str | None = None
     last_path = ""
     last_query: dict[str, list[str]] = {}
     last_session_header: str | None = None
@@ -517,7 +591,9 @@ class _FakeCoderlmHandler(BaseHTTPRequestHandler):
         type(self).last_path = parsed.path
         type(self).last_query = query
         type(self).last_session_header = self.headers.get("X-Session-Id")
-        if parsed.path == "/api/v1/health":
+        if parsed.path == self.non_object_path:
+            self._send(["not", "an", "object"])
+        elif parsed.path == "/api/v1/health":
             self._send({"status": "ok", "projects": 1, "active_sessions": 0})
         elif parsed.path == "/api/v1/roots":
             self._send(
@@ -561,7 +637,7 @@ class _FakeCoderlmHandler(BaseHTTPRequestHandler):
             }
         )
 
-    def _send(self, payload: dict) -> None:
+    def _send(self, payload: object) -> None:
         content = json.dumps(payload).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

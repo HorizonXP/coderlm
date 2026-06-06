@@ -62,14 +62,17 @@ def error_event(
 
 
 def response_summary(operation: str, response: dict[str, Any]) -> dict[str, Any]:
-    if "count" in response:
-        return {"count": response["count"]}
+    count = response.get("count")
+    if isinstance(count, int):
+        return {"count": count}
     if operation == "read_implementation":
         return {"source_bytes": len(response.get("source", ""))}
-    if "total_matches" in response:
-        return {"total_matches": response["total_matches"]}
-    if "lines" in response:
-        return {"line_count": len(response["lines"])}
+    total_matches = response.get("total_matches")
+    if isinstance(total_matches, int):
+        return {"total_matches": total_matches}
+    lines = response.get("lines")
+    if isinstance(lines, list):
+        return {"line_count": len(lines)}
     if "tree" in response:
         return {"file_count": response.get("file_count")}
     return {"keys": sorted(response)[:8]}

@@ -99,9 +99,10 @@ def run_agent_operations(
         try:
             response = run_operation(
                 client,
-                agent_session.session.session_id,
+                agent_session.session,
                 agent_session.prepared_fixture.fixture.as_dict(),
                 operation,
+                readiness_timeout_seconds=config["readiness_timeout_seconds"],
             )
             events.append(success_event(operation, context, started, response))
         except Exception as exc:
@@ -111,11 +112,16 @@ def run_agent_operations(
 
 def run_operation(
     client: CodeRLMClient,
-    session_id: str,
+    session: CodeRLMSession | str,
     fixture: dict[str, Any],
     operation: str,
+    *,
+    readiness_timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
     targets = fixture["known_targets"]
+    session_id = session.session_id if isinstance(session, CodeRLMSession) else session
+    if operation in SYMBOL_DEPENDENT_OPERATIONS and isinstance(session, CodeRLMSession):
+        client.wait_for_ready(session, readiness_timeout_seconds or 30)
 
     if operation == "structure":
         target = _target(targets, "structure", operation)
@@ -169,14 +175,14 @@ def run_operation(
         return client.get(
             "/api/v1/peek",
             session_id=session_id,
-            query={"file": target["path"], "start": "0", "end": "40"},
+            query={"file": target["path"], "start": "1", "end": "40"},
         )
     if operation in {"touch_file", "append_file", "replace_file"}:
         target = _target(targets, "structure", operation)
         return client.get(
             "/api/v1/peek",
             session_id=session_id,
-            query={"file": target["path"], "start": "0", "end": "20"},
+            query={"file": target["path"], "start": "1", "end": "20"},
         )
     raise UnsupportedOperationTarget(f"unsupported runtime operation: {operation}")
 

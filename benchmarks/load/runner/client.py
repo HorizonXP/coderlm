@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -73,10 +74,21 @@ class CodeRLMClient:
         while time.monotonic() < deadline:
             payload = self.request("GET", "/api/v1/roots")
             last_payload = payload
-            for root in payload.get("roots", []):
+            roots = payload.get("roots", [])
+            if not isinstance(roots, list):
+                raise CodeRLMClientError(
+                    f"roots endpoint returned invalid roots payload: {payload!r}",
+                    method="GET",
+                    url=f"{self.base_url}/api/v1/roots",
+                )
+            for root in roots:
+                if not isinstance(root, dict):
+                    continue
                 if root.get("path") == session.project_root and root.get("ready") is True:
                     return root
-            time.sleep(poll_interval_seconds)
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(poll_interval_seconds, remaining))
         raise ReadinessTimeout(
             "project did not become ready after "
             f"{timeout_seconds}s for session {session.session_id}; "
@@ -115,7 +127,15 @@ class CodeRLMClient:
         req = request.Request(url, data=data, headers=headers, method=method)
         try:
             with request.urlopen(req, timeout=self.request_timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8"))
+                payload = json.loads(response.read().decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise CodeRLMClientError(
+                        f"{method} {url} returned non-object JSON: {payload!r}",
+                        method=method,
+                        url=url,
+                        detail="non-object JSON response",
+                    )
+                return payload
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise CodeRLMClientError(
@@ -132,7 +152,7 @@ class CodeRLMClient:
                 url=url,
                 detail=str(exc.reason),
             ) from exc
-        except TimeoutError as exc:
+        except (TimeoutError, socket.timeout) as exc:
             raise CodeRLMClientError(
                 f"{method} {url} timed out",
                 method=method,
@@ -148,6 +168,8 @@ class CodeRLMClient:
             ) from exc
 
     def _url(self, path: str, query: dict[str, str] | None = None) -> str:
+        if not path.startswith("/"):
+            raise CodeRLMClientError(f"API path must start with '/': {path!r}")
         url = f"{self.base_url}{path}"
         if query:
             url = f"{url}?{parse.urlencode(query)}"
