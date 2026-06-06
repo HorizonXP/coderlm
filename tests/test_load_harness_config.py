@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib import parse
@@ -22,6 +23,14 @@ from benchmarks.load.fixtures_support import (
     touch_known_file,
 )
 from benchmarks.load.runner.__main__ import HarnessError, run_scenario
+from benchmarks.load.runner.client import CodeRLMClient, CodeRLMSession, ReadinessTimeout
+from benchmarks.load.runner.events import (
+    OperationContext,
+    UnsupportedOperationTarget,
+    error_event,
+    success_event,
+)
+from benchmarks.load.runner.executor import run_operation
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -265,6 +274,172 @@ class LoadHarnessConfigTests(unittest.TestCase):
         self.assertEqual(report["scenario"]["cpu_profile"]["label"], "2cpu")
         written = json.loads((tmp_dir / "reports/report.json").read_text(encoding="utf-8"))
         self.assertEqual(written["server"]["session"]["session_id"], "session-1")
+        self.assertEqual(len(written["server"]["sessions"]), 2)
+        self.assertEqual(written["operations"][0]["scenario_id"], "SCENARIO-05")
+        self.assertEqual(written["operations"][0]["fixture_id"], "starter-project")
+        self.assertEqual(written["operations"][0]["status"], "success")
+
+    def test_client_constructs_session_header_and_query_request(self) -> None:
+        server = self.enterContext(_fake_coderlm_server())
+        client = CodeRLMClient(f"http://127.0.0.1:{server.port}")
+
+        payload = client.get(
+            "/api/v1/symbols/search",
+            session_id="session-for-header",
+            query={"q": "compute_total", "limit": "20"},
+        )
+
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(_FakeCoderlmHandler.last_session_header, "session-for-header")
+        self.assertEqual(_FakeCoderlmHandler.last_path, "/api/v1/symbols/search")
+        self.assertEqual(
+            _FakeCoderlmHandler.last_query,
+            {"q": ["compute_total"], "limit": ["20"]},
+        )
+
+    def test_client_rejects_relative_paths_and_non_object_json(self) -> None:
+        server = self.enterContext(_fake_coderlm_server(non_object_path="/api/v1/health"))
+        client = CodeRLMClient(f"http://127.0.0.1:{server.port}")
+
+        with self.assertRaisesRegex(Exception, "must start with '/'"):
+            client.get("api/v1/health")
+        with self.assertRaisesRegex(Exception, "non-object JSON"):
+            client.health()
+
+    def test_readiness_timeout_is_explicitly_classified(self) -> None:
+        server = self.enterContext(_fake_coderlm_server(ready=False))
+        client = CodeRLMClient(f"http://127.0.0.1:{server.port}")
+        session = CodeRLMSession(
+            session_id="session-never-ready",
+            project_root="/fixture",
+            raw={"session_id": "session-never-ready", "project": "/fixture"},
+        )
+
+        with self.assertRaises(ReadinessTimeout) as exc:
+            client.wait_for_ready(session, 1, poll_interval_seconds=0.01)
+
+        context = OperationContext(
+            scenario_id="SCENARIO-07",
+            fixture_id="starter-project",
+            agent_id="agent-1",
+            project_id="project-1",
+            session_id=session.session_id,
+            project_root=session.project_root,
+        )
+        event = error_event("readiness", context, 1.0, exc.exception)
+
+        self.assertEqual(event["status"], "error")
+        self.assertEqual(event["error_classification"], "readiness_timeout")
+
+    def test_unsupported_operation_target_normalizes_to_event(self) -> None:
+        context = OperationContext(
+            scenario_id="SCENARIO-07",
+            fixture_id="starter-project",
+            agent_id="agent-1",
+            project_id="project-1",
+            session_id="session-1",
+            project_root="/fixture",
+        )
+        exc = UnsupportedOperationTarget("missing target")
+
+        event = error_event("list_tests", context, 1.0, exc)
+
+        self.assertFalse(event["ok"])
+        self.assertEqual(event["status"], "unsupported")
+        self.assertEqual(
+            event["error_classification"],
+            "unsupported_operation_target",
+        )
+
+    def test_runner_records_unsupported_targets_without_failing_report(self) -> None:
+        tmp_dir = self.enterContext(_temporary_directory())
+        server = self.enterContext(_fake_coderlm_server())
+        scenario_path = write_scenario(
+            tmp_dir,
+            {
+                "scenario_id": "SCENARIO-07",
+                "workload_id": "core_api_smoke",
+                "scenario_mix": [{"operation": "list_tests", "weight": 1}],
+                "server_options": {"host": "127.0.0.1", "port": server.port},
+                "output_dir": str(tmp_dir / "reports"),
+                "readiness_timeout_seconds": 2,
+            },
+        )
+        config = load_scenario(scenario_path)
+
+        unsupported_event = {
+            "operation": "list_tests",
+            "scenario_id": "SCENARIO-07",
+            "fixture_id": "starter-project",
+            "agent_id": "agent-1",
+            "project_id": "project-1",
+            "session_id": "session-1",
+            "project_root": "/fixture",
+            "started_at_monotonic": 1.0,
+            "ended_at_monotonic": 1.1,
+            "elapsed_seconds": 0.1,
+            "status": "unsupported",
+            "ok": False,
+            "error_classification": "unsupported_operation_target",
+            "error": "missing target",
+            "response_summary": None,
+        }
+        with (
+            mock.patch("benchmarks.load.runner.__main__.create_agent_sessions", return_value=[]),
+            mock.patch(
+                "benchmarks.load.runner.__main__._run_agent_batches",
+                return_value=[unsupported_event],
+            ),
+        ):
+            report = run_scenario(config)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["summary"]["request_errors"], 0)
+        self.assertEqual(report["summary"]["unsupported_requests"], 1)
+        self.assertEqual(report["operations"][0]["status"], "unsupported")
+
+    def test_success_event_normalizes_identity_and_response_summary(self) -> None:
+        context = OperationContext(
+            scenario_id="SCENARIO-08",
+            fixture_id="starter-project",
+            agent_id="agent-2",
+            project_id="project-1",
+            session_id="session-2",
+            project_root="/fixture",
+        )
+
+        event = success_event("grep", context, 1.0, {"total_matches": 3})
+
+        self.assertTrue(event["ok"])
+        self.assertEqual(event["status"], "success")
+        self.assertEqual(event["scenario_id"], "SCENARIO-08")
+        self.assertEqual(event["agent_id"], "agent-2")
+        self.assertEqual(event["response_summary"], {"total_matches": 3})
+
+    def test_success_event_ignores_malformed_count_summary(self) -> None:
+        context = OperationContext(
+            scenario_id="SCENARIO-08",
+            fixture_id="starter-project",
+            agent_id="agent-2",
+            project_id="project-1",
+            session_id="session-2",
+            project_root="/fixture",
+        )
+
+        event = success_event("search_symbols", context, 1.0, {"count": "one", "symbols": []})
+
+        self.assertEqual(event["response_summary"], {"keys": ["count", "symbols"]})
+
+    def test_missing_fixture_target_is_classified_without_http_request(self) -> None:
+        client = CodeRLMClient("http://127.0.0.1:1")
+        fixture = {
+            "known_targets": {
+                "structure": {"path": "src/starter/math_ops.py"},
+            }
+        }
+
+        with self.assertRaises(UnsupportedOperationTarget):
+            run_operation(client, "session-1", fixture, "list_tests")
 
     def test_health_timeout_exits_nonzero_with_actionable_error(self) -> None:
         config = load_scenario(COMPOSE_HEALTH_TIMEOUT)
@@ -377,7 +552,16 @@ class _temporary_directory:
 
 
 class _fake_coderlm_server:
+    def __init__(self, *, ready: bool = True, non_object_path: str | None = None) -> None:
+        self.ready = ready
+        self.non_object_path = non_object_path
+
     def __enter__(self) -> "_fake_coderlm_server":
+        _FakeCoderlmHandler.ready = self.ready
+        _FakeCoderlmHandler.non_object_path = self.non_object_path
+        _FakeCoderlmHandler.last_path = ""
+        _FakeCoderlmHandler.last_query = {}
+        _FakeCoderlmHandler.last_session_header = None
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeCoderlmHandler)
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -392,6 +576,11 @@ class _fake_coderlm_server:
 
 class _FakeCoderlmHandler(BaseHTTPRequestHandler):
     project_path = ""
+    ready = True
+    non_object_path: str | None = None
+    last_path = ""
+    last_query: dict[str, list[str]] = {}
+    last_session_header: str | None = None
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -399,7 +588,12 @@ class _FakeCoderlmHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = parse.urlparse(self.path)
         query = parse.parse_qs(parsed.query)
-        if parsed.path == "/api/v1/health":
+        type(self).last_path = parsed.path
+        type(self).last_query = query
+        type(self).last_session_header = self.headers.get("X-Session-Id")
+        if parsed.path == self.non_object_path:
+            self._send(["not", "an", "object"])
+        elif parsed.path == "/api/v1/health":
             self._send({"status": "ok", "projects": 1, "active_sessions": 0})
         elif parsed.path == "/api/v1/roots":
             self._send(
@@ -407,13 +601,15 @@ class _FakeCoderlmHandler(BaseHTTPRequestHandler):
                     "roots": [
                         {
                             "path": self.project_path,
-                            "ready": True,
-                            "readiness": "ready",
+                            "ready": self.ready,
+                            "readiness": "ready" if self.ready else "indexing",
                         }
                     ],
                     "count": 1,
                 }
             )
+        elif parsed.path == "/api/v1/structure":
+            self._send({"tree": "src/\n", "file_count": 1})
         elif parsed.path == "/api/v1/symbols/search":
             self._send({"symbols": [{"name": query["q"][0]}], "count": 1})
         elif parsed.path == "/api/v1/symbols/implementation":
@@ -441,7 +637,7 @@ class _FakeCoderlmHandler(BaseHTTPRequestHandler):
             }
         )
 
-    def _send(self, payload: dict) -> None:
+    def _send(self, payload: object) -> None:
         content = json.dumps(payload).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
