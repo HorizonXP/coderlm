@@ -2,9 +2,9 @@
 
 This directory defines the stable scenario contract for future load benchmark
 work. The current runner validates JSON scenario files, applies defaults and
-command-line overrides, polls a CodeRLM server, creates a session for the
-configured fixture, waits for readiness, executes the configured core API smoke
-workflow, and writes a report.
+command-line overrides, polls a CodeRLM server, creates configured fixture
+sessions, waits for readiness, executes the configured core API smoke workflow,
+and writes a report.
 
 ## Layout
 
@@ -72,6 +72,7 @@ Every normalized scenario includes these workload knobs:
 - `workload_id`
 - `agent_count`
 - `project_count`
+- `max_concurrency`
 - `duration_seconds`
 - `request_pacing.mode`
 - `request_pacing.requests_per_second`

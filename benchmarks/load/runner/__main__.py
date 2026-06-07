@@ -14,7 +14,12 @@ from typing import Any
 
 from benchmarks.load.config import ConfigValidationError, ScenarioOverrides, load_scenario
 from benchmarks.load.runner.client import CodeRLMClient, CodeRLMClientError
-from benchmarks.load.runner.events import UNSUPPORTED, classify_error, error_event
+from benchmarks.load.runner.events import (
+    UNSUPPORTED,
+    OperationContext,
+    classify_error,
+    error_event,
+)
 from benchmarks.load.runner.executor import create_agent_sessions, run_agent_operations
 
 
@@ -39,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--agents", type=int, dest="agent_count")
     parser.add_argument("--projects", type=int, dest="project_count")
+    parser.add_argument("--max-concurrency", type=int)
     parser.add_argument("--duration-seconds", type=int)
     parser.add_argument("--output-dir")
     parser.add_argument("--cpu-profile-label")
@@ -59,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         run_id=args.run_id,
         agent_count=args.agent_count,
         project_count=args.project_count,
+        max_concurrency=args.max_concurrency,
         duration_seconds=args.duration_seconds,
         output_dir=args.output_dir,
         cpu_profile_label=args.cpu_profile_label,
@@ -101,8 +108,20 @@ def run_scenario(config: dict[str, Any]) -> dict[str, Any]:
     timeout = config["readiness_timeout_seconds"]
     client = CodeRLMClient(base_url)
     health = _poll_health(client, timeout)
-    agent_sessions = create_agent_sessions(client, config)
-    operations = _run_agent_batches(client, config, agent_sessions)
+    agent_sessions = []
+    operations: list[dict[str, Any]]
+    try:
+        agent_sessions = create_agent_sessions(client, config)
+        operations = _run_agent_batches(client, config, agent_sessions)
+    except Exception as exc:
+        operations = [
+            error_event(
+                "session_setup",
+                _setup_context(config),
+                time.monotonic(),
+                exc,
+            )
+        ]
 
     total = len(operations)
     failed = [operation for operation in operations if _is_unexpected_failure(operation)]
@@ -165,7 +184,7 @@ def _run_agent_batches(
         ]
 
     operations: list[dict[str, Any]] = []
-    max_workers = min(len(agent_sessions), config["agent_count"])
+    max_workers = min(len(agent_sessions), config["max_concurrency"])
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
@@ -240,8 +259,6 @@ def _is_unexpected_failure(operation: dict[str, Any]) -> bool:
 
 
 def _worker_context(config: dict[str, Any], agent_session: Any) -> Any:
-    from benchmarks.load.runner.events import OperationContext
-
     return OperationContext(
         scenario_id=config["scenario_id"],
         fixture_id=config["fixture_id"],
@@ -251,6 +268,19 @@ def _worker_context(config: dict[str, Any], agent_session: Any) -> Any:
         project_root=agent_session.session.project_root,
         run_id=config["run_id"],
         worker_id=agent_session.agent_id,
+    )
+
+
+def _setup_context(config: dict[str, Any]) -> OperationContext:
+    return OperationContext(
+        scenario_id=config["scenario_id"],
+        fixture_id=config["fixture_id"],
+        agent_id="setup",
+        project_id="setup",
+        session_id="",
+        project_root="",
+        run_id=config["run_id"],
+        worker_id="setup",
     )
 
 

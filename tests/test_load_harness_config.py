@@ -59,6 +59,7 @@ class LoadHarnessConfigTests(unittest.TestCase):
         self.assertEqual(normalized["run_id"], "local-run")
         self.assertEqual(normalized["agent_count"], 2)
         self.assertEqual(normalized["project_count"], 1)
+        self.assertEqual(normalized["max_concurrency"], 2)
         self.assertEqual(normalized["duration_seconds"], 60)
         self.assertEqual(
             normalized["request_pacing"],
@@ -117,6 +118,7 @@ class LoadHarnessConfigTests(unittest.TestCase):
             normalized = load_scenario(path)
 
         self.assertEqual(normalized["agent_count"], 1)
+        self.assertEqual(normalized["max_concurrency"], 1)
         self.assertEqual(normalized["duration_seconds"], 60)
         self.assertEqual(normalized["request_pacing"]["requests_per_second"], 1.0)
         self.assertEqual(normalized["server_options"]["port"], 3000)
@@ -141,6 +143,10 @@ class LoadHarnessConfigTests(unittest.TestCase):
             (
                 {"server_options": {"port": 70000}},
                 "server_options.port must be an integer between 1 and 65535",
+            ),
+            (
+                {"max_concurrency": 3},
+                "max_concurrency must be less than or equal",
             ),
         ]
 
@@ -176,6 +182,8 @@ class LoadHarnessConfigTests(unittest.TestCase):
                 "4",
                 "--projects",
                 "3",
+                "--max-concurrency",
+                "2",
                 "--request-rate",
                 "2.25",
                 "--think-time-seconds",
@@ -196,6 +204,7 @@ class LoadHarnessConfigTests(unittest.TestCase):
 
         self.assertEqual(normalized["agent_count"], 4)
         self.assertEqual(normalized["project_count"], 3)
+        self.assertEqual(normalized["max_concurrency"], 2)
         self.assertEqual(normalized["run_id"], "ci-scenario-08")
         self.assertEqual(normalized["request_pacing"]["requests_per_second"], 2.25)
         self.assertEqual(normalized["request_pacing"]["think_time_seconds"], 0.5)
@@ -444,6 +453,79 @@ class LoadHarnessConfigTests(unittest.TestCase):
         self.assertEqual(events[0]["operation"], "worker")
         self.assertEqual(events[0]["error_classification"], "runner_error")
 
+    def test_runner_respects_max_concurrency_at_executor_boundary(self) -> None:
+        tmp_dir = self.enterContext(_temporary_directory())
+        prepared = prepare_fixture_working_copy("starter-project", tmp_dir, "bounded")
+        sessions = [
+            AgentSession(
+                agent_id=f"agent-{index}",
+                project_id=f"project-{index}",
+                prepared_fixture=prepared,
+                session=CodeRLMSession(
+                    session_id=f"session-{index}",
+                    project_root=str(prepared.worktree_path),
+                    raw={"session_id": f"session-{index}", "project": str(prepared.worktree_path)},
+                ),
+                readiness={"ready": True},
+            )
+            for index in (1, 2, 3)
+        ]
+        config = load_scenario(
+            write_scenario(
+                tmp_dir,
+                {
+                    "scenario_id": "SCENARIO-08",
+                    "agent_count": 3,
+                    "max_concurrency": 1,
+                    "duration_seconds": 1,
+                    "scenario_mix": [{"operation": "structure", "weight": 1}],
+                    "output_dir": str(tmp_dir / "reports"),
+                },
+            )
+        )
+        active = 0
+        max_seen = 0
+        lock = threading.Lock()
+        self.assertEqual(config["max_concurrency"], 1)
+
+        def fake_run_agent_operations(*args: object, **kwargs: object) -> list[dict]:
+            nonlocal active, max_seen
+            agent_session = args[2]
+            with lock:
+                active += 1
+                max_seen = max(max_seen, active)
+            try:
+                time.sleep(0.03)
+                return [
+                    success_event(
+                        "structure",
+                        OperationContext(
+                            scenario_id=config["scenario_id"],
+                            fixture_id=config["fixture_id"],
+                            agent_id=agent_session.agent_id,
+                            project_id=agent_session.project_id,
+                            session_id=agent_session.session.session_id,
+                            project_root=agent_session.session.project_root,
+                            run_id=config["run_id"],
+                        ),
+                        1.0,
+                        {"tree": "src/", "file_count": 1},
+                        sequence=0,
+                    )
+                ]
+            finally:
+                with lock:
+                    active -= 1
+
+        with mock.patch(
+            "benchmarks.load.runner.__main__.run_agent_operations",
+            side_effect=fake_run_agent_operations,
+        ):
+            events = _run_agent_batches(CodeRLMClient("http://127.0.0.1:1"), config, sessions)
+
+        self.assertEqual(max_seen, 1)
+        self.assertEqual(len(events), 3)
+
     def test_expected_error_classification_does_not_fail_report(self) -> None:
         tmp_dir = self.enterContext(_temporary_directory())
         server = self.enterContext(_fake_coderlm_server(gone_paths={"/api/v1/structure"}))
@@ -474,6 +556,35 @@ class LoadHarnessConfigTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(report["summary"]["expected_errors"], 1)
         self.assertTrue(report["operations"][0]["expected_error"])
+
+    def test_readiness_setup_failure_writes_reportable_partial_event(self) -> None:
+        tmp_dir = self.enterContext(_temporary_directory())
+        server = self.enterContext(_fake_coderlm_server(ready=False))
+        config = load_scenario(
+            write_scenario(
+                tmp_dir,
+                {
+                    "scenario_id": "SCENARIO-07",
+                    "workload_id": "core_api_smoke",
+                    "duration_seconds": 1,
+                    "scenario_mix": [{"operation": "structure", "weight": 1}],
+                    "server_options": {"host": "127.0.0.1", "port": server.port},
+                    "output_dir": str(tmp_dir / "reports"),
+                    "readiness_timeout_seconds": 1,
+                },
+            )
+        )
+
+        with self.assertRaises(HarnessError):
+            run_scenario(config)
+
+        report = json.loads((tmp_dir / "reports/report.json").read_text(encoding="utf-8"))
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["operations"][0]["operation"], "session_setup")
+        self.assertEqual(
+            report["operations"][0]["error_classification"],
+            "readiness_timeout",
+        )
 
     def test_client_constructs_session_header_and_query_request(self) -> None:
         server = self.enterContext(_fake_coderlm_server())

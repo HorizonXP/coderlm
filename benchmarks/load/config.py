@@ -92,6 +92,7 @@ DEFAULTS: dict[str, Any] = {
     "run_id": "local-run",
     "agent_count": 1,
     "project_count": 1,
+    "max_concurrency": None,
     "duration_seconds": 60,
     "request_pacing": {
         "mode": "fixed_rps",
@@ -135,6 +136,7 @@ class ScenarioOverrides:
     run_id: str | None = None
     agent_count: int | None = None
     project_count: int | None = None
+    max_concurrency: int | None = None
     duration_seconds: int | None = None
     output_dir: str | None = None
     cpu_profile_label: str | None = None
@@ -151,6 +153,7 @@ class ScenarioOverrides:
             "run_id",
             "agent_count",
             "project_count",
+            "max_concurrency",
             "duration_seconds",
             "output_dir",
             "cpu_profile_label",
@@ -191,6 +194,8 @@ def load_scenario(path: Path, overrides: ScenarioOverrides | None = None) -> dic
     normalized = _merge_defaults(raw)
     if overrides is not None:
         _deep_update(normalized, overrides.as_updates())
+    if normalized.get("max_concurrency") is None:
+        normalized["max_concurrency"] = normalized.get("agent_count")
 
     errors = _validate(normalized)
     if errors:
@@ -229,6 +234,7 @@ def _validate(config: dict[str, Any]) -> list[str]:
     _require_string(config, "fixture_id", errors)
     _require_positive_int(config, "agent_count", errors)
     _require_positive_int(config, "project_count", errors)
+    _require_positive_int(config, "max_concurrency", errors)
     _require_positive_int(config, "duration_seconds", errors)
     _require_positive_int(config, "readiness_timeout_seconds", errors)
     _require_unit_interval(config, "reliability_threshold", errors)
@@ -248,6 +254,17 @@ def _validate(config: dict[str, Any]) -> list[str]:
             "unknown workload_id: "
             f"{workload_id}; expected one of {sorted(SUPPORTED_WORKLOADS)}"
         )
+
+    agent_count = config.get("agent_count")
+    max_concurrency = config.get("max_concurrency")
+    if (
+        isinstance(agent_count, int)
+        and not isinstance(agent_count, bool)
+        and isinstance(max_concurrency, int)
+        and not isinstance(max_concurrency, bool)
+        and max_concurrency > agent_count
+    ):
+        errors.append("max_concurrency must be less than or equal to agent_count")
 
     cpu_profile_label = config.get("cpu_profile_label")
     if (
