@@ -44,6 +44,10 @@ enum Commands {
         /// Maximum number of concurrent indexed projects
         #[arg(long, default_value = "5")]
         max_projects: usize,
+
+        /// Disable filesystem watchers; projects are indexed once and refreshed manually
+        #[arg(long)]
+        disable_watcher: bool,
     },
 }
 
@@ -68,8 +72,17 @@ async fn main() -> anyhow::Result<()> {
             bind,
             max_file_size,
             max_projects,
+            disable_watcher,
         } => {
-            run_server(path, port, bind, max_file_size, max_projects).await?;
+            run_server(
+                path,
+                port,
+                bind,
+                max_file_size,
+                max_projects,
+                disable_watcher,
+            )
+            .await?;
         }
     }
 
@@ -82,9 +95,11 @@ async fn run_server(
     bind: String,
     max_file_size: u64,
     max_projects: usize,
+    disable_watcher: bool,
 ) -> anyhow::Result<()> {
     // Create shared state
-    let state = AppState::new(max_projects, max_file_size);
+    let watcher_enabled = !disable_watcher && std::env::var("CODERLM_DISABLE_WATCHER").is_err();
+    let state = AppState::with_watcher(max_projects, max_file_size, watcher_enabled);
 
     // If an initial path was provided, pre-index it
     if let Some(ref p) = path {

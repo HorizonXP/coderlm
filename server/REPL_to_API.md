@@ -770,3 +770,18 @@ coderlm-server serve --max-projects 10
 # Pre-index a project at startup (optional)
 coderlm-server serve /home/user/main-project --max-projects 5
 ```
+
+For generated-heavy workspaces, start with `--disable-watcher` or
+`CODERLM_DISABLE_WATCHER=1` and refresh snapshots explicitly:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/v1/roots/reindex \
+  -H 'content-type: application/json' \
+  -d '{"path":"/home/user/main-project"}'
+```
+
+To drop a stale project root and its sessions:
+
+```bash
+curl -X DELETE 'http://127.0.0.1:3000/api/v1/roots?path=/home/user/main-project'
+```

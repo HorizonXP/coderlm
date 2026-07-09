@@ -81,6 +81,7 @@ Options:
   -b, --bind <ADDR>                  Bind address [default: 127.0.0.1]
       --max-file-size <BYTES>        Skip files larger than this [default: 1000000]
       --max-projects <N>             Maximum concurrent indexed projects [default: 5]
+      --disable-watcher              Index projects once and refresh manually
 ```
 
 ## Logging
@@ -182,6 +183,24 @@ Example response:
 }
 ```
 
+Evict a root and drop its sessions:
+
+```bash
+curl -X DELETE 'localhost:3000/api/v1/roots?path=/home/user/backend'
+```
+
+Refresh a root in place without restarting the server:
+
+```bash
+curl -X POST localhost:3000/api/v1/roots/reindex \
+  -H 'content-type: application/json' \
+  -d '{"path":"/home/user/backend"}'
+```
+
+Reindexing replaces the project snapshot and watcher while keeping sessions
+attached to the same project path. Project-local buffers, variables, and
+subcall results are reset with the fresh project state.
+
 `readiness` is `"indexing"` until initial background symbol extraction finishes,
 then `"ready"`; `ready` mirrors that state as a boolean and
 `extraction_complete` reports the same initial extraction completion flag.
@@ -232,9 +251,9 @@ exact, contains, or suffix match, which can intentionally cover multiple files.
 
 - `--max-file-size <BYTES>` skips files larger than the configured size during cold indexing and removes them from the live index if an edit pushes them over the limit. The default is `1,000,000` bytes.
 - `--max-projects <N>` bounds the number of simultaneously indexed project roots. When the limit is reached, the least recently used project is evicted with its watcher and symbols.
-- `CODERLM_DISABLE_WATCHER=1` starts projects without filesystem watchers. Use this for generated-heavy workspaces when manual session recreation is preferable to live re-indexing.
-- Built-in ignored directories include dependency, build, VCS, cache, coverage, and Journey runtime directories such as `node_modules`, `vendor`, `target`, `.git`, `.cache`, and `.journey`. These ignores are applied in addition to `.gitignore`.
-- Watcher updates are debounced for roughly 500 ms and coalesce duplicate events for the same path before updating the file tree or reparsing symbols.
+- `--disable-watcher` or `CODERLM_DISABLE_WATCHER=1` starts projects without filesystem watchers. Use this for generated-heavy workspaces when manual reindexing is preferable to live updates.
+- Built-in ignored directories include common dependency, build, VCS, cache, and coverage directories such as `node_modules`, `vendor`, `target`, `.git`, and `.cache`. Project-specific runtime directories should be ignored by the target repo's `.gitignore` or git exclude rules.
+- Watcher updates are debounced for roughly 500 ms and coalesce duplicate events for the same path before updating the file tree or reparsing symbols. Existing ignored directories are not subscribed, so generated churn under paths such as `_build`, `deps`, and `node_modules` should not enter the debouncer.
 
 ## Supported languages (tree-sitter)
 
@@ -264,6 +283,8 @@ All endpoints are under `/api/v1`. Data endpoints require `X-Session-Id` header 
 |--------|-----------------------------|------------------|--------------------------------------|
 | GET    | `/health`                   | No               | Server status (project/session counts) |
 | GET    | `/roots`                    | No               | List all registered projects (admin) |
+| DELETE | `/roots?path=...`           | No               | Evict one project root and its sessions |
+| POST   | `/roots/reindex`            | No               | Reindex one project root with `{ "path": "..." }` |
 | GET    | `/sessions`                 | No               | List all active sessions (admin)     |
 | POST   | `/sessions`                 | No               | Create session with `{ "cwd": "..." }` (response includes L1 structure) |
 | GET    | `/sessions/:id`             | No               | Get session info                     |

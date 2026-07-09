@@ -66,7 +66,8 @@ pub fn build_routes(state: AppState) -> Router {
         // Health
         .route("/api/v1/health", get(health))
         // Admin
-        .route("/api/v1/roots", get(list_roots))
+        .route("/api/v1/roots", get(list_roots).delete(delete_root))
+        .route("/api/v1/roots/reindex", post(reindex_root))
         // Sessions
         .route("/api/v1/sessions", get(list_sessions).post(create_session))
         .route("/api/v1/sessions/{id}", get(get_session))
@@ -168,6 +169,54 @@ async fn list_roots(State(state): State<AppState>) -> Json<Value> {
         .collect();
 
     Json(json!({ "roots": roots, "count": roots.len() }))
+}
+
+#[derive(Deserialize)]
+struct RootPathQuery {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct ReindexRootBody {
+    path: String,
+}
+
+async fn delete_root(
+    State(state): State<AppState>,
+    Query(params): Query<RootPathQuery>,
+) -> Result<Json<Value>, AppError> {
+    let (path, removed_sessions) = state.evict_project(&PathBuf::from(params.path))?;
+
+    Ok(Json(json!({
+        "deleted": true,
+        "path": path.display().to_string(),
+        "removed_sessions": removed_sessions,
+    })))
+}
+
+async fn reindex_root(
+    State(state): State<AppState>,
+    Json(body): Json<ReindexRootBody>,
+) -> Result<Json<Value>, AppError> {
+    let (project, replaced_existing) = state.reindex_project(&PathBuf::from(body.path))?;
+    let status = project.status_snapshot();
+
+    Ok(Json(json!({
+        "reindexed": true,
+        "replaced_existing": replaced_existing,
+        "root": {
+            "path": status.path,
+            "file_count": status.file_count,
+            "symbol_count": status.symbol_count,
+            "readiness": status.readiness,
+            "ready": status.ready,
+            "extraction_complete": status.extraction_complete,
+            "last_indexed_at": status.last_indexed_at.to_rfc3339(),
+            "watcher_enabled": status.watcher_enabled,
+            "watcher_state": status.watcher_state,
+            "caller_cache_stats": status.caller_cache_stats,
+        }
+    })))
 }
 
 // ---------------------------------------------------------------------------

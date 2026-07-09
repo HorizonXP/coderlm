@@ -92,32 +92,25 @@ pub struct AppStateInner {
     pub sessions: DashMap<String, Session>,
     pub max_projects: usize,
     pub max_file_size: u64,
+    pub watcher_enabled: bool,
 }
 
 impl AppState {
-    pub fn new(max_projects: usize, max_file_size: u64) -> Self {
+    pub fn with_watcher(max_projects: usize, max_file_size: u64, watcher_enabled: bool) -> Self {
         Self {
             inner: Arc::new(AppStateInner {
                 projects: DashMap::new(),
                 sessions: DashMap::new(),
                 max_projects,
                 max_file_size,
+                watcher_enabled,
             }),
         }
     }
 
     /// Look up an existing project or index a new one. Evicts LRU if at capacity.
     pub fn get_or_create_project(&self, cwd: &Path) -> Result<Arc<Project>, AppError> {
-        let canonical = cwd
-            .canonicalize()
-            .map_err(|e| AppError::BadRequest(format!("Path not accessible: {}", e)))?;
-
-        if !canonical.is_dir() {
-            return Err(AppError::BadRequest(format!(
-                "'{}' is not a directory",
-                canonical.display()
-            )));
-        }
+        let canonical = canonical_project_dir(cwd)?;
 
         // Return existing project if found
         if let Some(project) = self.inner.projects.get(&canonical) {
@@ -142,9 +135,7 @@ impl AppState {
 
         // Start watcher unless disabled for large/generated-heavy workspaces.
         let last_indexed_at = Arc::new(Mutex::new(Utc::now()));
-        let watcher_handle = if std::env::var("CODERLM_DISABLE_WATCHER").is_ok() {
-            None
-        } else {
+        let watcher_handle = if self.inner.watcher_enabled {
             watcher::start_watcher(
                 &canonical,
                 file_tree.clone(),
@@ -153,6 +144,8 @@ impl AppState {
                 last_indexed_at.clone(),
             )
             .ok()
+        } else {
+            None
         };
 
         let project = Arc::new(Project {
@@ -185,6 +178,21 @@ impl AppState {
         });
 
         Ok(project)
+    }
+
+    /// Re-index a project root in place. Existing sessions remain attached to
+    /// the same path, but project-local buffers/vars/subcall results are reset.
+    pub fn reindex_project(&self, path: &Path) -> Result<(Arc<Project>, bool), AppError> {
+        let canonical = canonical_project_dir(path)?;
+        let replaced_existing = self.inner.projects.remove(&canonical).is_some();
+        let project = self.get_or_create_project(&canonical)?;
+        Ok((project, replaced_existing))
+    }
+
+    /// Remove a project root and all sessions attached to it.
+    pub fn evict_project(&self, path: &Path) -> Result<(PathBuf, usize), AppError> {
+        let canonical = canonical_project_dir(path)?;
+        self.remove_project(&canonical, true)
     }
 
     /// Look up the project for a given session. Returns a descriptive error if
@@ -228,18 +236,53 @@ impl AppState {
 
         let path = oldest.ok_or_else(|| AppError::Internal("No projects to evict".into()))?;
 
-        info!("Evicting project: {}", path.display());
-
-        // Remove the project (drops watcher)
-        self.inner.projects.remove(&path);
-
-        // Remove all sessions attached to this project
-        self.inner
-            .sessions
-            .retain(|_, session| session.project_path != path);
+        self.remove_project(&path, true)?;
 
         Ok(())
     }
+
+    fn remove_project(
+        &self,
+        path: &Path,
+        remove_sessions: bool,
+    ) -> Result<(PathBuf, usize), AppError> {
+        let path = path.to_path_buf();
+
+        info!("Evicting project: {}", path.display());
+
+        // Remove the project (drops watcher)
+        self.inner.projects.remove(&path).ok_or_else(|| {
+            AppError::NotFound(format!("Project '{}' is not indexed", path.display()))
+        })?;
+
+        let mut removed_sessions = 0;
+        if remove_sessions {
+            self.inner.sessions.retain(|_, session| {
+                let remove = session.project_path == path;
+                if remove {
+                    removed_sessions += 1;
+                }
+                !remove
+            });
+        }
+
+        Ok((path, removed_sessions))
+    }
+}
+
+fn canonical_project_dir(cwd: &Path) -> Result<PathBuf, AppError> {
+    let canonical = cwd
+        .canonicalize()
+        .map_err(|e| AppError::BadRequest(format!("Path not accessible: {}", e)))?;
+
+    if !canonical.is_dir() {
+        return Err(AppError::BadRequest(format!(
+            "'{}' is not a directory",
+            canonical.display()
+        )));
+    }
+
+    Ok(canonical)
 }
 
 #[cfg(test)]

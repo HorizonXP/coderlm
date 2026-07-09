@@ -358,6 +358,60 @@ Elixir/ExUnit test discovery is conservative. It reports source `test` blocks th
 oversized, missing, and unsupported files; separate per-reason counters are not
 exposed.
 
+### evict root
+
+Drop one indexed project root, including its filesystem watcher and any sessions
+attached to it:
+
+```bash
+curl -X DELETE 'http://127.0.0.1:3000/api/v1/roots?path=/home/user/backend'
+```
+
+```json
+{
+  "deleted": true,
+  "path": "/home/user/backend",
+  "removed_sessions": 2
+}
+```
+
+### reindex root
+
+Refresh one indexed project root without restarting the server:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/v1/roots/reindex \
+  -H 'content-type: application/json' \
+  -d '{"path":"/home/user/backend"}'
+```
+
+```json
+{
+  "reindexed": true,
+  "replaced_existing": true,
+  "root": {
+    "path": "/home/user/backend",
+    "file_count": 142,
+    "symbol_count": 0,
+    "readiness": "indexing",
+    "ready": false,
+    "extraction_complete": false,
+    "last_indexed_at": "2026-02-07T19:08:00Z",
+    "watcher_enabled": false,
+    "watcher_state": "disabled",
+    "caller_cache_stats": {
+      "entry_count": 0,
+      "hit_count": 0,
+      "miss_count": 0,
+      "invalidation_count": 0
+    }
+  }
+}
+```
+
+Reindexing keeps sessions attached to the same project path, but replaces the
+project snapshot, watcher, buffers, variables, and subcall results.
+
 ## Symbol Kinds
 
 `function`, `method`, `class`, `struct`, `enum`, `trait`, `interface`, `constant`, `variable`, `type`, `module`

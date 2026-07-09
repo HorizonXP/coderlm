@@ -13,12 +13,14 @@
 #   --port PORT           Port to listen on (default: 3000)
 #   --bind ADDR           Bind address (default: 127.0.0.1)
 #   --max-projects N      Max concurrent indexed projects (default: 5)
+#   --disable-watcher     Index projects once and refresh manually
 #   --project PATH        Project directory to pre-index
 #
 # Environment:
 #   CODERLM_DIR           Override server directory (default: auto-detect from script location)
 #   CODERLM_LOG_DIR       Override log directory (default: ~/.local/state/coderlm)
 #   CODERLM_PID_DIR       Override PID directory (default: ~/.local/state/coderlm)
+#   CODERLM_DISABLE_WATCHER=1  Disable filesystem watchers
 
 set -euo pipefail
 
@@ -70,6 +72,7 @@ cmd_start() {
     local port="3000"
     local bind="127.0.0.1"
     local max_projects="5"
+    local disable_watcher=""
     local project=""
 
     while [[ $# -gt 0 ]]; do
@@ -77,12 +80,16 @@ cmd_start() {
             --port)       port="$2"; shift 2 ;;
             --bind)       bind="$2"; shift 2 ;;
             --max-projects) max_projects="$2"; shift 2 ;;
+            --disable-watcher) disable_watcher="1"; shift ;;
             --project)    project="$2"; shift 2 ;;
             *)            echo "Unknown option: $1"; exit 1 ;;
         esac
     done
 
     local args=(serve --port "$port" --bind "$bind" --max-projects "$max_projects")
+    if [[ -n "$disable_watcher" ]]; then
+        args+=(--disable-watcher)
+    fi
     if [[ -n "$project" ]]; then
         args+=("$project")
     fi
@@ -182,7 +189,7 @@ case "${1:-help}" in
         echo "Usage: $0 {start|stop|restart|status|logs} [OPTIONS]"
         echo ""
         echo "Commands:"
-        echo "  start   [--port N] [--bind ADDR] [--max-projects N] [--project PATH]"
+        echo "  start   [--port N] [--bind ADDR] [--max-projects N] [--disable-watcher] [--project PATH]"
         echo "  stop    Stop the daemon"
         echo "  restart Stop then start with new options"
         echo "  status  Check if running + health"

@@ -35,9 +35,9 @@ Environment captured for this run:
 
 Notes:
 
-- The timed root is the Journey worktree for this issue. Runtime directories
-  such as `.journey`, `.git`, and `server/target` are skipped by the server's
-  ignore rules.
+- The timed root is the Journey worktree for this issue. Runtime and generated
+  directories such as `.journey`, `.git`, and `server/target` are skipped by the
+  server's default ignore list, gitignore rules, or project-specific excludes.
 - Endpoint names and query parameters were checked against
   `server/src/server/routes.rs` before recording commands.
 
