@@ -21,7 +21,6 @@ ignore = "0.4"
 
 # Filesystem watching
 notify = "8"
-notify-debouncer-mini = "0.7"
 
 # Tree-sitter
 tree-sitter = "0.26"
