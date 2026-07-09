@@ -1,5 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use ignore::WalkBuilder;
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -50,11 +51,13 @@ pub fn start_watcher(
         },
     )?;
 
-    debouncer
-        .watcher()
-        .watch(&root_buf, notify::RecursiveMode::Recursive)?;
+    let watched_dirs = watch_existing_source_dirs(&mut debouncer, &root_buf)?;
 
-    info!("Filesystem watcher started for {}", root_buf.display());
+    info!(
+        "Filesystem watcher started for {} ({} directories watched)",
+        root_buf.display(),
+        watched_dirs
+    );
 
     Ok(WatcherHandle {
         _debouncer: Some(debouncer),
@@ -63,6 +66,71 @@ pub fn start_watcher(
 
 pub struct WatcherHandle {
     _debouncer: Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>,
+}
+
+fn watch_existing_source_dirs(
+    debouncer: &mut notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>,
+    root: &Path,
+) -> Result<usize> {
+    let mut watched = 0;
+
+    for dir in collect_watchable_dirs(root) {
+        match debouncer
+            .watcher()
+            .watch(&dir, notify::RecursiveMode::NonRecursive)
+        {
+            Ok(()) => watched += 1,
+            Err(err) => warn!("Failed to watch {}: {}", dir.display(), err),
+        }
+    }
+
+    if watched == 0 {
+        debouncer
+            .watcher()
+            .watch(root, notify::RecursiveMode::NonRecursive)?;
+        watched = 1;
+    }
+
+    Ok(watched)
+}
+
+fn collect_watchable_dirs(root: &Path) -> Vec<PathBuf> {
+    let root_for_filter = root.to_path_buf();
+    let walker = WalkBuilder::new(root)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .filter_entry(move |entry| should_watch_entry(&root_for_filter, entry.path()))
+        .build();
+
+    let mut dirs = Vec::new();
+    for entry in walker {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+
+        if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+            dirs.push(entry.path().to_path_buf());
+        }
+    }
+
+    dirs.sort();
+    dirs
+}
+
+fn should_watch_entry(root: &Path, path: &Path) -> bool {
+    if path == root {
+        return true;
+    }
+
+    let rel_path = match path.strip_prefix(root) {
+        Ok(rel) => rel.to_string_lossy().to_string(),
+        Err(_) => return false,
+    };
+
+    !should_skip(&rel_path)
 }
 
 fn handle_events(
@@ -266,6 +334,36 @@ mod tests {
             CallSiteCacheLookup::Hit(facts) => facts.into_iter().map(|fact| fact.callee).collect(),
             other => panic!("expected cached call sites for {rel_path}, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn watchable_dirs_respect_gitignore_and_hidden_subtrees() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::write(root.join(".gitignore"), "generated/\ncache-output/\n").unwrap();
+        fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::create_dir_all(root.join("generated/dev/lib")).unwrap();
+        fs::create_dir_all(root.join("cache-output/tmp")).unwrap();
+        fs::create_dir_all(root.join(".hidden-work/cache")).unwrap();
+
+        let dirs = collect_watchable_dirs(&root);
+        let rel_dirs: Vec<String> = dirs
+            .iter()
+            .map(|dir| {
+                dir.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+
+        assert!(rel_dirs.contains(&"".to_string()));
+        assert!(rel_dirs.contains(&"src".to_string()));
+        assert!(rel_dirs.contains(&"src/nested".to_string()));
+        assert!(!rel_dirs.iter().any(|dir| dir.starts_with("generated")));
+        assert!(!rel_dirs.iter().any(|dir| dir.starts_with("cache-output")));
+        assert!(!rel_dirs.iter().any(|dir| dir.starts_with(".hidden-work")));
     }
 
     #[test]
